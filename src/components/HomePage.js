@@ -1,7 +1,7 @@
 // src/components/HomePage.js
 import React, { useState, useEffect } from 'react';
 
-const HomePage = ({ wallet, wallets, onLogout, onSwitchWallet, onCreateWallet }) => {
+const HomePage = ({ wallet, wallets, onLogout, onSwitchWallet, onCreateWallet, onSend }) => {
         const [balance, setBalance] = useState(0);
 
         useEffect(() => {
@@ -34,7 +34,7 @@ const HomePage = ({ wallet, wallets, onLogout, onSwitchWallet, onCreateWallet })
                                         </option>
                                 ))}
                         </select>
-                        <button className="btn" onClick={() => console.log('Send Bitcoin')}>Send</button>
+                        <button className="btn" onClick={onSend}>Send</button>
                         <button className="btn" onClick={() => console.log('Receive Bitcoin')}>Receive</button>
                         <button className="btn" onClick={onCreateWallet}>Create New Wallet</button>
                         <button className="btn" onClick={onLogout}>Logout</button>
