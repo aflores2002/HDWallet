@@ -1,6 +1,7 @@
+// src/components/HomePage.js
 import React, { useState, useEffect } from 'react';
 
-const HomePage = ({ wallet, onLogout }) => {
+const HomePage = ({ wallet, wallets, onLogout, onSwitchWallet, onCreateWallet }) => {
         const [balance, setBalance] = useState(0);
 
         useEffect(() => {
@@ -17,12 +18,26 @@ const HomePage = ({ wallet, onLogout }) => {
 
         return (
                 <div>
-                        <h2>Bitcoin Wallet</h2>
-                        <p>Address: {wallet.address}</p>
-                        <p>Balance: {balance} BTC</p>
-                        <button onClick={() => console.log('Send Bitcoin')}>Send</button>
-                        <button onClick={() => console.log('Receive Bitcoin')}>Receive</button>
-                        <button onClick={onLogout}>Logout</button>
+                        <div className="card">
+                                <h2>Your Wallet</h2>
+                                <p className="balance">{balance} BTC</p>
+                                <p className="address">Address: {wallet.address}</p>
+                        </div>
+                        <select
+                                className="input"
+                                value={wallets.findIndex(w => w.address === wallet.address)}
+                                onChange={(e) => onSwitchWallet(Number(e.target.value))}
+                        >
+                                {wallets.map((w, index) => (
+                                        <option key={w.address} value={index}>
+                                                Wallet {index + 1}
+                                        </option>
+                                ))}
+                        </select>
+                        <button className="btn" onClick={() => console.log('Send Bitcoin')}>Send</button>
+                        <button className="btn" onClick={() => console.log('Receive Bitcoin')}>Receive</button>
+                        <button className="btn" onClick={onCreateWallet}>Create New Wallet</button>
+                        <button className="btn" onClick={onLogout}>Logout</button>
                 </div>
         );
 };

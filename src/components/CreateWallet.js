@@ -1,12 +1,12 @@
 import React from 'react';
 
-function CreateWallet({ onCreateWallet }) {
+const CreateWallet = ({ onCreateWallet }) => {
         return (
-                <div>
+                <div className="card">
                         <h2>Create a New Wallet</h2>
-                        <button onClick={onCreateWallet}>Create Wallet</button>
+                        <button className="btn" onClick={onCreateWallet}>Create Wallet</button>
                 </div>
         );
-}
+};
 
 export default CreateWallet;
