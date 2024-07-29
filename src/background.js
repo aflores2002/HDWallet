@@ -31,9 +31,16 @@ async function loginWallet(mnemonic) {
 
 // Function to get balance
 async function getBalance(address) {
-        // Implement balance fetching logic here
-        console.log('Fetching balance for address:', address);
-        return 0; // Placeholder
+        console.log('getBalance called for address:', address);
+        try {
+                const response = await fetch(`https://api.blockcypher.com/v1/btc/test3/addrs/${address}/balance`);
+                const data = await response.json();
+                console.log('Balance data received:', data);
+                return data.balance / 100000000; // Convert satoshis to BTC
+        } catch (error) {
+                console.error('Error fetching balance:', error);
+                return null;
+        }
 }
 
 
@@ -53,7 +60,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 loginWallet(request.mnemonic).then(sendResponse);
                 return true;
         } else if (request.action === 'getBalance') {
-                getBalance(request.address).then(sendResponse);
+                console.log('Received getBalance message for address:', request.address);
+                getBalance(request.address).then(balance => {
+                        console.log('Sending balance response:', balance);
+                        sendResponse(balance);
+                });
                 return true;
         } else if (request.action === 'sendBitcoin') {
                 sendBitcoin(request.toAddress, request.amount, request.fee).then(sendResponse);

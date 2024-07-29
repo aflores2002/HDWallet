@@ -3,6 +3,9 @@ import React, { useState, useEffect } from 'react';
 import CreateWallet from './CreateWallet';
 import HomePage from './HomePage';
 import Login from './Login';
+
+import SendBTC from './SendBTC';
+
 import '../styles.css';
 
 const App = () => {
@@ -70,6 +73,16 @@ const App = () => {
                 });
         };
 
+
+
+        const handleSend = () => {
+                setView('sendBTC');
+        }
+        const handleReturnToHome = () => {
+                setView('home');
+        }
+
+
         return (
                 <div className="container">
                         <header className="header">
@@ -93,9 +106,21 @@ const App = () => {
                                                 onLogout={handleLogout}
                                                 onSwitchWallet={handleSwitchWallet}
                                                 onCreateWallet={handleCreateWallet}
+
+                                                onSend={handleSend}
                                         />
                                 )}
                                 {view === 'login' && <Login onLogin={handleLogin} onCreateWallet={handleCreateWallet} />}
+
+
+                                {view === 'sendBTC' && (
+                                        <SendBTC
+                                                onSend={handleSend}
+                                                onReturn={handleReturnToHome}
+                                        />
+                                )}
+
+
                         </main>
                         <footer className="footer">
                                 <p>&copy; 2024 HD Wallet</p>
