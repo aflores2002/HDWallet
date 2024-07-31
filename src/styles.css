@@ -83,3 +83,62 @@ body {
         border-radius: 5px;
         background-color: white;
       }
+
+      /* Transaction Histoty */
+      .transaction-history {
+        max-width: 100%;
+        overflow-x: hidden;
+    }
+
+    .transaction-list {
+        list-style-type: none;
+        padding: 0;
+    }
+
+    .transaction-item {
+        background-color: #f0f0f0;
+        border-radius: 5px;
+        margin-bottom: 10px;
+        padding: 10px;
+    }
+
+    .txid-container {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+
+    .txid-text {
+        font-family: monospace;
+        background-color: #e0e0e0;
+        padding: 2px 5px;
+        border-radius: 3px;
+    }
+
+    .copy-btn {
+        background-color: #1652f0;
+        color: white;
+        border: none;
+        padding: 2px 5px;
+        border-radius: 3px;
+        cursor: pointer;
+        font-size: 12px;
+    }
+
+    .copy-btn:hover {
+        background-color: #1141d3;
+    }
+
+    .view-tx-btn {
+        display: inline-block;
+        background-color: #1652f0;
+        color: white;
+        text-decoration: none;
+        padding: 5px 10px;
+        border-radius: 3px;
+        font-size: 14px;
+    }
+
+    .view-tx-btn:hover {
+        background-color: #1141d3;
+    }

@@ -6,6 +6,18 @@ import * as bip39 from 'bip39';
 import * as hdkey from 'hdkey';
 import CryptoJS from 'crypto-js';
 
+if (chrome.alarms) {
+        chrome.alarms.create('keepAlive', { periodInMinutes: 1 });
+
+        chrome.alarms.onAlarm.addListener((alarm) => {
+                if (alarm.name === 'keepAlive') {
+                        extendSession();
+                }
+        });
+} else {
+        console.warn('Alarms API is not available');
+}
+
 // Function to create a new wallet
 async function createWallet() {
         const mnemonic = generateMnemonic();
@@ -92,6 +104,41 @@ function decryptWallet(encryptedWallet, password) {
         }
 }
 
+// manage session timeout
+let sessionTimeout = null;
+
+function setSession(wallets, currentWallet, password) {
+        chrome.storage.local.set({
+                sessionWallets: wallets,
+                sessionCurrentWallet: currentWallet,
+                sessionPassword: password
+        }, () => {
+                console.log('Session stored');
+        });
+
+        // Clear any existing timeout
+        if (sessionTimeout) {
+                clearTimeout(sessionTimeout);
+        }
+
+        // Set a new timeout for 30 minutes (1800000 ms)
+        sessionTimeout = setTimeout(clearSession, 1800000);
+}
+
+function clearSession() {
+        chrome.storage.local.remove(['sessionWallets', 'sessionCurrentWallet', 'sessionPassword'], () => {
+                console.log('Session cleared');
+        });
+}
+
+function extendSession() {
+        chrome.storage.local.get(['sessionWallets', 'sessionCurrentWallet', 'sessionPassword'], (result) => {
+                if (result.sessionWallets && result.sessionCurrentWallet && result.sessionPassword) {
+                        setSession(result.sessionWallets, result.sessionCurrentWallet, result.sessionPassword);
+                }
+        });
+}
+
 // Listen for messages from the popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         if (request.action === 'createWallet') {
@@ -171,7 +218,39 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         } else if (request.action === 'sendBitcoin') {
                 sendBitcoin(request.toAddress, request.amount, request.fee).then(sendResponse);
                 return true;
+        } else if (request.action === 'setSession') {
+                setSession(request.wallets, request.currentWallet, request.password);
+                sendResponse({ success: true });
+        } else if (request.action === 'getSession') {
+                chrome.storage.local.get(['sessionWallets', 'sessionCurrentWallet', 'sessionPassword'], (result) => {
+                        if (result.sessionWallets && result.sessionCurrentWallet && result.sessionPassword) {
+                                extendSession();
+                                sendResponse({
+                                        success: true,
+                                        wallets: result.sessionWallets,
+                                        currentWallet: result.sessionCurrentWallet,
+                                        password: result.sessionPassword
+                                });
+                        } else {
+                                sendResponse({ success: false });
+                        }
+                });
+                return true;  // Indicates we will send a response asynchronously
+        } else if (request.action === 'clearSession') {
+                clearSession();
+                sendResponse({ success: true });
         }
 });
 
-console.log('Background script running');
+//console.log('Background script running')
+
+// Keep the background script alive
+chrome.runtime.onInstalled.addListener(() => {
+        chrome.alarms.create('keepAlive', { periodInMinutes: 1 });
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+        if (alarm.name === 'keepAlive') {
+                extendSession();
+        }
+});

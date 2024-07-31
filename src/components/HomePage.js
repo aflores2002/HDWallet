@@ -1,9 +1,11 @@
 // src/components/HomePage.js
 import React, { useState, useEffect } from 'react';
+import TransactionHistory from './TransactionHistory';
 
-const HomePage = ({ wallet, wallets, onLogout, onSwitchWallet, onCreateWallet, onSend }) => {
+const HomePage = ({ wallet, wallets, onLogout, onSwitchWallet, onCreateWallet, onSend, onReceive }) => {
         const [balance, setBalance] = useState(null);
         const [isLoading, setIsLoading] = useState(true);
+        const [showTransactionHistory, setShowTransactionHistory] = useState(false);
 
         useEffect(() => {
                 if (wallet && wallet.address) {
@@ -23,6 +25,10 @@ const HomePage = ({ wallet, wallets, onLogout, onSwitchWallet, onCreateWallet, o
                 return <div>Loading wallet...</div>;
         }
 
+        if (showTransactionHistory) {
+                return <TransactionHistory address={wallet.address} onReturn={() => setShowTransactionHistory(false)} />;
+        }
+
         return (
                 <div>
                         <div className="card">
@@ -35,7 +41,6 @@ const HomePage = ({ wallet, wallets, onLogout, onSwitchWallet, onCreateWallet, o
                                                                 'Invalid balance data') :
                                                         'Error fetching balance'}
                                 </p>
-                                <p className="address">Address: {wallet.address}</p>
                         </div>
                         <select
                                 className="input"
@@ -49,7 +54,8 @@ const HomePage = ({ wallet, wallets, onLogout, onSwitchWallet, onCreateWallet, o
                                 ))}
                         </select>
                         <button className="btn" onClick={onSend}>Send</button>
-                        <button className="btn" onClick={() => console.log('Receive Bitcoin')}>Receive</button>
+                        <button className="btn" onClick={onReceive}>Receive</button>
+                        <button className="btn" onClick={() => setShowTransactionHistory(true)}>View Transaction History</button>
                         <button className="btn" onClick={onCreateWallet}>Create New Wallet</button>
                         <button className="btn" onClick={onLogout}>Logout</button>
                 </div>
