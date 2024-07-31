@@ -11,6 +11,7 @@ export const walletFromSeedPhrase = async ({ mnemonic, index = 0, network = 'Mai
         const seed = await bip39.mnemonicToSeed(mnemonic);
         const root = hdkey.fromMasterSeed(seed);
         const masterPrivateKey = root.privateKey.toString('hex');
+        const xpub = root.publicExtendedKey;
 
         // Derive the address (m/44'/0'/0'/0/0 for first Bitcoin address)
         const addrNode = root.derive("m/44'/0'/0'/0/" + index);
@@ -27,7 +28,8 @@ export const walletFromSeedPhrase = async ({ mnemonic, index = 0, network = 'Mai
 
         return {
                 mnemonic,
-                masterPrivateKey,
+                xpub,
+                //masterPrivateKey,
                 address,
                 publicKey: step1.toString('hex'),
         };

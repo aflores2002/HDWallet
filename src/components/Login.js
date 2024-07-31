@@ -2,23 +2,24 @@
 import React, { useState } from 'react';
 
 const Login = ({ onLogin, onCreateWallet }) => {
-        const [mnemonic, setMnemonic] = useState('');
+        const [password, setPassword] = useState('');
 
         const handleSubmit = (e) => {
                 e.preventDefault();
-                onLogin(mnemonic);
+                onLogin(password);
         };
 
         return (
                 <div>
                         <form onSubmit={handleSubmit} className="card">
                                 <h2>Login to Your Wallet</h2>
-                                <textarea
-                                        className="input"
-                                        value={mnemonic}
-                                        onChange={(e) => setMnemonic(e.target.value)}
-                                        placeholder="Enter your mnemonic phrase"
+                                <input
+                                        type="password"
+                                        value={password}
+                                        onChange={(e) => setPassword(e.target.value)}
+                                        placeholder="Enter your password"
                                         required
+                                        className="input"
                                 />
                                 <button type="submit" className="btn">Login</button>
                         </form>
