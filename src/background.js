@@ -41,8 +41,10 @@ async function getBalance(address) {
 async function sendBitcoin(toAddress, amount, fee) {
         // Implement transaction creation and signing using signBtcTransaction
         // Broadcast the transaction
+        const network = bitcoin.networks.testnet;
         console.log('Sending Bitcoin to:', toAddress, 'Amount:', amount, 'Fee:', fee);
-}
+        return{success: true};
+} 
 
 // Listen for messages from the popup
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
