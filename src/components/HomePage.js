@@ -19,6 +19,20 @@ const HomePage = ({ wallet, wallets, onLogout, onSwitchWallet, onCreateWallet, o
                 }
         }, [wallet]);
 
+        const formatBalance = (balance) => {
+                if (balance === null || balance === undefined) return 'Error fetching balance';
+                if (typeof balance !== 'number') return 'Invalid balance data';
+                if (balance === 0) return '0 BTC';
+
+                // Convert to string and remove trailing zeros
+                const balanceStr = balance.toString();
+                const [intPart, fracPart] = balanceStr.split('.');
+                const trimmedFracPart = fracPart ? fracPart.replace(/0+$/, '') : '';
+
+                // Reconstruct the balance string
+                return `${intPart}${trimmedFracPart ? '.' + trimmedFracPart : ''} BTC`;
+        };
+
         console.log('Current balance state:', balance);
 
         if (!wallet) {
@@ -35,11 +49,7 @@ const HomePage = ({ wallet, wallets, onLogout, onSwitchWallet, onCreateWallet, o
                                 <h2>Your Wallet</h2>
                                 <p className="balance">
                                         {isLoading ? 'Loading balance...' :
-                                                balance !== null ?
-                                                        (typeof balance === 'number' ?
-                                                                `${balance.toFixed(8)} BTC` :
-                                                                'Invalid balance data') :
-                                                        'Error fetching balance'}
+                                                formatBalance(balance)}
                                 </p>
                         </div>
                         <select
