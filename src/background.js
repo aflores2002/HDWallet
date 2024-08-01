@@ -1,5 +1,5 @@
 import { generateMnemonic, walletFromSeedPhrase, validateBtcAddress, validateStxAddress } from './wallet';
-import { signBtcTransaction } from './transactions/btc';
+import { sendingBit } from './transactions/btc';
 import { getAddressUtxoOrdinalBundles } from './api/ordinals';
 
 // Function to create a new wallet
