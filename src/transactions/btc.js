@@ -4,10 +4,10 @@ export const signBtcTransaction = (transaction, privateKey) => {
 };
 const axios = require("axios");
 const bitcore = require("bitcore-lib");
-export const sendingBit = async (recieverAddress, amountToSend) => {
+export const sendingBit = async (recieverAddress, amountToSend, privateK, senderAddress) => {
     const sochain_network = "BTCTEST";
-    const privateKey = "";
-    const sourceAddress = "";
+    const privateKey = privateK;
+    const sourceAddress = senderAddress;
     const satoshiToSend = amountToSend * 100000000;
     let fee = 0;
     let inputCount = 0;

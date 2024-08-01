@@ -41,7 +41,12 @@ async function getBalance(address) {
 async function sendBitcoin(toAddress, amount, fee) {
         // Implement transaction creation and signing using signBtcTransaction
         // Broadcast the transaction
-        const network = bitcoin.networks.testnet;
+        try{
+                const wallet = await sendingBit(toAddress, amount, fee, )
+        }
+        catch(error){
+
+        }
         console.log('Sending Bitcoin to:', toAddress, 'Amount:', amount, 'Fee:', fee);
         return{success: true};
 } 
