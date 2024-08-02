@@ -1,36 +1,53 @@
+import * as bitcoin from 'bitcoinjs-lib';
 import * as bip39 from 'bip39';
-import * as hdkey from 'hdkey';
-import createHash from 'create-hash';
-import bs58check from 'bs58check';
+// import * as hdkey from 'hdkey';
+// import createHash from 'create-hash';
+// import bs58check from 'bs58check';
+import * as ecc from 'tiny-secp256k1';
+import { BIP32Factory } from 'bip32';
+import ECPairFactory from 'ecpair';
+
+// Initialize BIP32
+const bip32 = BIP32Factory(ecc);
+const ECPair = ECPairFactory(ecc);
 
 export const generateMnemonic = () => {
         return bip39.generateMnemonic();
 };
 
-export const walletFromSeedPhrase = async ({ mnemonic, index = 0, network = 'Mainnet' }) => {
+export const walletFromSeedPhrase = async ({ mnemonic, index = 0, network = 'Testnet' }) => {
         const seed = await bip39.mnemonicToSeed(mnemonic);
-        const root = hdkey.fromMasterSeed(seed);
-        const masterPrivateKey = root.privateKey.toString('hex');
-        const xpub = root.publicExtendedKey;
+        const networkParams = network === 'Testnet' ? bitcoin.networks.testnet : bitcoin.networks.bitcoin;
 
-        // Derive the address (m/44'/0'/0'/0/0 for first Bitcoin address)
-        const addrNode = root.derive("m/44'/0'/0'/0/" + index);
+        const root = bip32.fromSeed(seed, networkParams);
+        const path = `m/44'/0'/0'/0/${index}`;
+        const child = root.derivePath(path);
 
-        const step1 = addrNode._publicKey;
-        const step2 = createHash('sha256').update(step1).digest();
-        const step3 = createHash('rmd160').update(step2).digest();
-
-        const step4 = Buffer.allocUnsafe(21);
-        step4.writeUInt8(network === 'Mainnet' ? 0x00 : 0x6f, 0);
-        step3.copy(step4, 1);
-
-        const address = bs58check.encode(step4);
+        const keyPair = ECPair.fromPrivateKey(child.privateKey, { network: networkParams });
+        const { address } = bitcoin.payments.p2wpkh({ pubkey: keyPair.publicKey, network: networkParams });
 
         return {
                 mnemonic,
-                xpub,
-                //masterPrivateKey,
+                wif: keyPair.toWIF(),
                 address,
-                publicKey: step1.toString('hex'),
+                publicKey: child.publicKey.toString('hex'),
+                path
         };
+};
+
+export const validateBtcAddress = (address, network = 'Testnet') => {
+        try {
+                const networkParams = network === 'Testnet' ? bitcoin.networks.testnet : bitcoin.networks.bitcoin;
+                bitcoin.address.toOutputScript(address, networkParams);
+                return true;
+        } catch (error) {
+                return false;
+        }
+};
+
+// If you need STX address validation, you might want to implement it or use a Stacks-specific library
+export const validateStxAddress = (address) => {
+        // Implement STX address validation logic here
+        // This is a placeholder and should be replaced with actual validation
+        return address.startsWith('ST');
 };

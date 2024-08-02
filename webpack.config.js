@@ -17,7 +17,7 @@ module.exports = {
                 rules: [
                         {
                                 test: /\.js$/,
-                                exclude: /node_modules\/(?!(hdkey|secp256k1|bip39|create-hash|bip32))/,
+                                exclude: /node_modules/,
                                 use: {
                                         loader: 'babel-loader',
                                         options: {
@@ -47,31 +47,36 @@ module.exports = {
                         process: 'process/browser',
                         Buffer: ['buffer', 'Buffer'],
                 }),
-                new webpack.NormalModuleReplacementPlugin(/node:/, (resource) => {
-                        const mod = resource.request.replace(/^node:/, "");
-                        switch (mod) {
-                                case "buffer":
-                                        resource.request = "buffer";
-                                        break;
-                                case "stream":
-                                        resource.request = "readable-stream";
-                                        break;
-                                default:
-                                        throw new Error(`Not found ${mod}`);
-                        }
+                new webpack.DefinePlugin({
+                        'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV || 'development')
                 }),
+                // new webpack.NormalModuleReplacementPlugin(/node:/, (resource) => {
+                //         const mod = resource.request.replace(/^node:/, "");
+                //         switch (mod) {
+                //                 case "buffer":
+                //                         resource.request = "buffer";
+                //                         break;
+                //                 case "stream":
+                //                         resource.request = "readable-stream";
+                //                         break;
+                //                 default:
+                //                         throw new Error(`Not found ${mod}`);
+                //         }
+                // }),
         ],
         resolve: {
-                extensions: ['.js', '.jsx'],
                 fallback: {
-                        "vm": require.resolve("vm-browserify"),
-                        "assert": require.resolve("assert/"),
                         "crypto": require.resolve("crypto-browserify"),
                         "stream": require.resolve("stream-browserify"),
                         "buffer": require.resolve("buffer/"),
                         "util": require.resolve("util/"),
                         "process": require.resolve("process/browser")
+                },
+                alias: {
+                        process: "process/browser"
                 }
         },
-        devtool: 'cheap-module-source-map'
+        experiments: {
+                asyncWebAssembly: true,
+        },
 };

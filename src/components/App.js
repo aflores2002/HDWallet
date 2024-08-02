@@ -40,6 +40,12 @@ const App = () => {
                                 alert('Error creating wallet. Please try again.');
                                 return;
                         }
+                        if (response.error) {
+                                console.error('Error creating wallet:', response.error);
+                                alert('Error creating wallet. Please try again.');
+                                return;
+                        }
+                        console.log('New wallet created:', response);
                         setNewWallet(response);
                         setView('showMnemonic');
                 });
@@ -54,21 +60,17 @@ const App = () => {
                         alert('No wallet data available');
                         return;
                 }
-                console.log('Setting password for wallet:', newWallet.address);
+                console.log('Wallet data being sent for encryption:', newWallet);
                 chrome.runtime.sendMessage({
                         action: 'encryptWallet',
                         wallet: {
                                 mnemonic: newWallet.mnemonic,
+                                wif: newWallet.wif,
                                 address: newWallet.address
                         },
                         password: password
                 }, (response) => {
-                        if (chrome.runtime.lastError) {
-                                console.error('Error encrypting wallet:', chrome.runtime.lastError);
-                                alert('Error encrypting wallet. Please try again.');
-                                return;
-                        }
-                        console.log('Encrypt wallet response:', response);
+                        console.log('Encryption response:', response);
                         if (response && response.success) {
                                 setWallets([response.encryptedWallet]);
                                 setCurrentWallet(response.encryptedWallet);
@@ -82,6 +84,8 @@ const App = () => {
                 });
         };
 
+
+
         const handleLogin = (password) => {
                 console.log('Attempting login with password');
                 chrome.runtime.sendMessage({ action: 'decryptWallets', password }, (response) => {
@@ -91,7 +95,7 @@ const App = () => {
                                 return;
                         }
                         console.log('Login response:', response);
-                        if (response && response.success) {
+                        if (response && response.success && Array.isArray(response.wallets)) {
                                 setWallets(response.wallets);
                                 setCurrentWallet(response.wallets[0]);
                                 setCurrentPassword(password);
@@ -103,7 +107,7 @@ const App = () => {
                                 });
                                 setView('home');
                         } else {
-                                console.error('Login failed:', response.error);
+                                console.error('Login failed:', response ? response.error : 'Unknown error');
                                 alert(response && response.error ? response.error : 'Login failed. Please check your password and try again.');
                         }
                 });
@@ -150,7 +154,12 @@ const App = () => {
                                         const updatedWallets = [...wallets, encryptResponse.encryptedWallet];
                                         setWallets(updatedWallets);
                                         setCurrentWallet(encryptResponse.encryptedWallet);
-                                        chrome.runtime.sendMessage({ action: 'setSession', wallet: encryptResponse.encryptedWallet, password: currentPassword });
+                                        chrome.runtime.sendMessage({
+                                                action: 'setSession',
+                                                wallets: encryptResponse.encryptedWallet,
+                                                currentWallet: encryptResponse.encryptedWallet,
+                                                password: currentPassword
+                                        });
                                 } else {
                                         alert(`Failed to create additional wallet: ${encryptResponse ? encryptResponse.error : 'Unknown error'}`);
                                 }
@@ -191,8 +200,8 @@ const App = () => {
                                         />
                                 )}
                                 {view === 'login' && <Login onLogin={handleLogin} onCreateWallet={handleCreateWallet} />}
-                                {view === 'send' && <SendBTC onReturn={() => setView('home')} />}
-                                {view === 'receive' && <ReceivePage wallet={currentWallet} onReturn={() => setView('home')} />}
+                                {view === 'send' && currentWallet && <SendBTC wallet={currentWallet} onReturn={() => setView('home')} />}
+                                {view === 'receive' && currentWallet && <ReceivePage wallet={currentWallet} onReturn={() => setView('home')} />}
                         </main>
                         <footer className="footer">
                                 <p>&copy; 2024 HD Wallet</p>

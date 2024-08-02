@@ -1,13 +1,6 @@
 /*!
  * The buffer module from node.js, for the browser.
  *
- * @author   Feross Aboukhadijeh <feross@feross.org> <http://feross.org>
- * @license  MIT
- */
-
-/*!
- * The buffer module from node.js, for the browser.
- *
  * @author   Feross Aboukhadijeh <https://feross.org>
  * @license  MIT
  */
@@ -17,6 +10,8 @@
 /*! noble-hashes - MIT License (c) 2022 Paul Miller (paulmillr.com) */
 
 /*! safe-buffer. MIT License. Feross Aboukhadijeh <https://feross.org/opensource> */
+
+/*! scure-base - MIT License (c) 2022 Paul Miller (paulmillr.com) */
 
 /** @preserve
 	 * Counter block mode compatible with  Dr Brian Gladman fileenc.c
