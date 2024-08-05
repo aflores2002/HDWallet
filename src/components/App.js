@@ -95,7 +95,7 @@ const App = () => {
                                 return;
                         }
                         console.log('Login response:', response);
-                        if (response && response.success && Array.isArray(response.wallets)) {
+                        if (response && response.success && Array.isArray(response.wallets) && response.wallets.length > 0) {
                                 setWallets(response.wallets);
                                 setCurrentWallet(response.wallets[0]);
                                 setCurrentPassword(password);
