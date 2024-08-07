@@ -1,3 +1,4 @@
+// src/background.js
 import { generateMnemonic, walletFromSeedPhrase } from './wallet';
 // import { signBtcTransaction } from './transactions/btc';
 // import { getAddressUtxoOrdinalBundles } from './api/ordinals';

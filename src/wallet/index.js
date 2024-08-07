@@ -1,3 +1,4 @@
+// src/wallet/index.js
 import * as bitcoin from 'bitcoinjs-lib';
 import * as bip39 from 'bip39';
 // import * as hdkey from 'hdkey';

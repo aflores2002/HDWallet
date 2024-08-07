@@ -1,3 +1,4 @@
+// src/services/bitcoinService.js
 import * as bitcoin from 'bitcoinjs-lib';
 import ky from 'ky';
 import ECPairFactory from 'ecpair';
