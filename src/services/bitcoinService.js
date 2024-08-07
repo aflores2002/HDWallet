@@ -6,14 +6,14 @@ import * as ecc from 'tiny-secp256k1';
 // Initialize ECPair
 const ECPair = ECPairFactory(ecc);
 
-const SIGNET = bitcoin.networks.signet;
+const TESTNET = bitcoin.networks.testnet;
 const MAINNET = bitcoin.networks.bitcoin;
 
 // Choose network (change to MAINNET when ready for production)
-const NETWORK = SIGNET;
+const NETWORK = TESTNET;
 
-const MEMPOOL_API = NETWORK === SIGNET
-        ? 'https://mempool.space/signet/api'
+const MEMPOOL_API = NETWORK === TESTNET
+        ? 'https://mempool.space/testnet/api'
         : 'https://mempool.space/api';
 
 async function getUTXOs(address) {

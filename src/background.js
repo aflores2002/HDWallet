@@ -65,25 +65,10 @@ async function createWallet() {
 async function getBalance(address) {
         console.log('getBalance called for address:', address);
         try {
-                const response = await fetch(`https://mempool.space/signet/api/address/${address}`);
-                const data = await response.text(); // Get the response as text first
-
-                try {
-                        const jsonData = JSON.parse(data); // Try to parse it as JSON
-                        console.log('Balance data received:', jsonData);
-
-                        // Check if the response has a 'chain_stats' property
-                        if (jsonData && jsonData.chain_stats) {
-                                // The balance is in satoshis, so we convert it to BTC
-                                return jsonData.chain_stats.funded_txo_sum / 100000000;
-                        } else {
-                                throw new Error('Unexpected response format');
-                        }
-                } catch (jsonError) {
-                        console.error('Error parsing JSON:', jsonError);
-                        console.log('Raw response:', data);
-                        throw new Error('Invalid response from server');
-                }
+                const response = await fetch(`https://api.blockcypher.com/v1/btc/test3/addrs/${address}/balance`);
+                const data = await response.json();
+                console.log('Balance data received:', data);
+                return data.balance / 100000000; // Convert satoshis to BTC
         } catch (error) {
                 console.error('Error fetching balance:', error);
                 return null;
