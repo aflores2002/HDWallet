@@ -8,10 +8,10 @@ const TransactionHistory = ({ address, onReturn }) => {
         useEffect(() => {
                 const fetchTransactions = async () => {
                         try {
-                                const response = await fetch(`https://mempool.space/testnet/api/address/${address}/txs`);
+                                const response = await fetch(`https://mempool.space/signet/api/address/${address}/txs`);
                                 const data = await response.json();
                                 const processedTxs = await Promise.all(data.map(async (tx) => {
-                                        const txDetails = await fetch(`https://mempool.space/testnet/api/tx/${tx.txid}`);
+                                        const txDetails = await fetch(`https://mempool.space/signet/api/tx/${tx.txid}`);
                                         const txData = await txDetails.json();
                                         return {
                                                 time: new Date(tx.status.block_time * 1000).toLocaleString(),
@@ -67,7 +67,7 @@ const TransactionHistory = ({ address, onReturn }) => {
                                                         </p>
                                                         <p>
                                                                 <a
-                                                                        href={`https://mempool.space/testnet/tx/${tx.txid}`}
+                                                                        href={`https://mempool.space/signet/tx/${tx.txid}`}
                                                                         target="_blank"
                                                                         rel="noopener noreferrer"
                                                                         className="view-tx-btn"

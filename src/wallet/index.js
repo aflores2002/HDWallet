@@ -15,9 +15,9 @@ export const generateMnemonic = () => {
         return bip39.generateMnemonic();
 };
 
-export const walletFromSeedPhrase = async ({ mnemonic, index = 0, network = 'Testnet' }) => {
+export const walletFromSeedPhrase = async ({ mnemonic, index = 0, network = 'Signet' }) => {
         const seed = await bip39.mnemonicToSeed(mnemonic);
-        const networkParams = network === 'Testnet' ? bitcoin.networks.testnet : bitcoin.networks.bitcoin;
+        const networkParams = network === 'Signet' ? bitcoin.networks.signet : bitcoin.networks.bitcoin;
 
         const root = bip32.fromSeed(seed, networkParams);
         const path = `m/44'/0'/0'/0/${index}`;
@@ -35,9 +35,9 @@ export const walletFromSeedPhrase = async ({ mnemonic, index = 0, network = 'Tes
         };
 };
 
-export const validateBtcAddress = (address, network = 'Testnet') => {
+export const validateBtcAddress = (address, network = 'Signet') => {
         try {
-                const networkParams = network === 'Testnet' ? bitcoin.networks.testnet : bitcoin.networks.bitcoin;
+                const networkParams = network === 'Signet' ? bitcoin.networks.signet : bitcoin.networks.bitcoin;
                 bitcoin.address.toOutputScript(address, networkParams);
                 return true;
         } catch (error) {
