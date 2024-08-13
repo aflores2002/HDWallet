@@ -1,11 +1,11 @@
-// src/components/App.js
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import CreateWallet from './CreateWallet';
 import HomePage from './HomePage';
 import Login from './Login';
 import SetPassword from './SetPassword';
 import SendBTC from './SendBTC';
 import ReceivePage from './ReceivePage';
+import TestWalletFunctions from './TestWalletFunctions';
 import '../styles.css';
 
 const App = () => {
@@ -23,10 +23,10 @@ const App = () => {
         const checkSession = () => {
                 setIsLoading(true);
                 chrome.runtime.sendMessage({ action: 'getSession' }, (response) => {
-                        if (response.success) {
-                                setWallets(response.wallets);
-                                setCurrentWallet(response.currentWallet);
-                                setCurrentPassword(response.password);
+                        if (response && response.success) {
+                                setWallets(response.wallets || []);
+                                setCurrentWallet(response.currentWallet || null);
+                                setCurrentPassword(response.password || '');
                                 setView('home');
                         }
                         setIsLoading(false);
@@ -63,28 +63,27 @@ const App = () => {
                 console.log('Wallet data being sent for encryption:', newWallet);
                 chrome.runtime.sendMessage({
                         action: 'encryptWallet',
-                        wallet: {
-                                mnemonic: newWallet.mnemonic,
-                                wif: newWallet.wif,
-                                address: newWallet.address
-                        },
+                        wallet: newWallet,
                         password: password
                 }, (response) => {
                         console.log('Encryption response:', response);
                         if (response && response.success) {
-                                setWallets([response.encryptedWallet]);
+                                setWallets([...wallets, response.encryptedWallet]);
                                 setCurrentWallet(response.encryptedWallet);
                                 setNewWallet(null);
                                 setCurrentPassword(password);
-                                chrome.runtime.sendMessage({ action: 'setSession', wallet: response.encryptedWallet, password });
+                                chrome.runtime.sendMessage({
+                                        action: 'setSession',
+                                        wallets: [...wallets, response.encryptedWallet],
+                                        currentWallet: response.encryptedWallet,
+                                        password
+                                });
                                 setView('home');
                         } else {
                                 alert(`Failed to encrypt wallet: ${response ? response.error : 'Unknown error'}`);
                         }
                 });
         };
-
-
 
         const handleLogin = (password) => {
                 console.log('Attempting login with password');
@@ -123,14 +122,18 @@ const App = () => {
         };
 
         const handleSwitchWallet = (index) => {
-                const newWallet = wallets[index];
-                setCurrentWallet(newWallet);
-                chrome.runtime.sendMessage({
-                        action: 'setSession',
-                        wallets: wallets,
-                        currentWallet: newWallet,
-                        password: currentPassword
-                });
+                if (Array.isArray(wallets) && index >= 0 && index < wallets.length) {
+                        const newWallet = wallets[index];
+                        setCurrentWallet(newWallet);
+                        chrome.runtime.sendMessage({
+                                action: 'setSession',
+                                wallets: wallets,
+                                currentWallet: newWallet,
+                                password: currentPassword
+                        });
+                } else {
+                        console.error('Invalid wallet index:', index);
+                }
         };
 
         const handleCreateAdditionalWallet = () => {
@@ -156,7 +159,7 @@ const App = () => {
                                         setCurrentWallet(encryptResponse.encryptedWallet);
                                         chrome.runtime.sendMessage({
                                                 action: 'setSession',
-                                                wallets: encryptResponse.encryptedWallet,
+                                                wallets: updatedWallets,
                                                 currentWallet: encryptResponse.encryptedWallet,
                                                 password: currentPassword
                                         });
@@ -189,15 +192,18 @@ const App = () => {
                                 )}
                                 {view === 'setPassword' && <SetPassword onSetPassword={handleSetPassword} />}
                                 {view === 'home' && currentWallet && (
-                                        <HomePage
-                                                wallet={currentWallet}
-                                                wallets={wallets}
-                                                onLogout={handleLogout}
-                                                onSwitchWallet={handleSwitchWallet}
-                                                onCreateWallet={handleCreateAdditionalWallet}
-                                                onSend={() => setView('send')}
-                                                onReceive={() => setView('receive')}
-                                        />
+                                        <>
+                                                <HomePage
+                                                        wallet={currentWallet}
+                                                        wallets={wallets}
+                                                        onLogout={handleLogout}
+                                                        onSwitchWallet={handleSwitchWallet}
+                                                        onCreateWallet={handleCreateAdditionalWallet}
+                                                        onSend={() => setView('send')}
+                                                        onReceive={() => setView('receive')}
+                                                />
+                                                <TestWalletFunctions wallet={currentWallet} />
+                                        </>
                                 )}
                                 {view === 'login' && <Login onLogin={handleLogin} onCreateWallet={handleCreateWallet} />}
                                 {view === 'send' && currentWallet && <SendBTC wallet={currentWallet} onReturn={() => setView('home')} />}

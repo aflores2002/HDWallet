@@ -29,7 +29,13 @@ module.exports = {
                                 test: /\.css$/,
                                 use: ['style-loader', 'css-loader'],
                         },
-                ],
+                        {
+                                test: /\.m?js/,
+                                resolve: {
+                                        fullySpecified: false
+                                }
+                        }
+                ]
         },
         plugins: [
                 new CleanWebpackPlugin(),
@@ -50,19 +56,14 @@ module.exports = {
                 new webpack.DefinePlugin({
                         'process.env.NODE_ENV': JSON.stringify(process.env.NODE_ENV || 'development')
                 }),
-                // new webpack.NormalModuleReplacementPlugin(/node:/, (resource) => {
-                //         const mod = resource.request.replace(/^node:/, "");
-                //         switch (mod) {
-                //                 case "buffer":
-                //                         resource.request = "buffer";
-                //                         break;
-                //                 case "stream":
-                //                         resource.request = "readable-stream";
-                //                         break;
-                //                 default:
-                //                         throw new Error(`Not found ${mod}`);
-                //         }
-                // }),
+                new webpack.NormalModuleReplacementPlugin(
+                        /node:crypto/,
+                        require.resolve('crypto-browserify')
+                ),
+                new webpack.IgnorePlugin({
+                        resourceRegExp: /^\.\/locale$/,
+                        contextRegExp: /moment$/,
+                }),
         ],
         resolve: {
                 fallback: {
@@ -70,7 +71,9 @@ module.exports = {
                         "stream": require.resolve("stream-browserify"),
                         "buffer": require.resolve("buffer/"),
                         "util": require.resolve("util/"),
-                        "process": require.resolve("process/browser")
+                        "process": require.resolve("process/browser"),
+
+                        "vm": require.resolve("vm-browserify")
                 },
                 alias: {
                         process: "process/browser"

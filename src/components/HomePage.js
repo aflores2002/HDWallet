@@ -1,4 +1,3 @@
-// src/components/HomePage.js
 import React, { useState, useEffect } from 'react';
 import TransactionHistory from './TransactionHistory';
 
@@ -24,12 +23,10 @@ const HomePage = ({ wallet, wallets, onLogout, onSwitchWallet, onCreateWallet, o
                 if (typeof balance !== 'number') return 'Invalid balance data';
                 if (balance === 0) return '0 BTC';
 
-                // Convert to string and remove trailing zeros
                 const balanceStr = balance.toString();
                 const [intPart, fracPart] = balanceStr.split('.');
                 const trimmedFracPart = fracPart ? fracPart.replace(/0+$/, '') : '';
 
-                // Reconstruct the balance string
                 return `${intPart}${trimmedFracPart ? '.' + trimmedFracPart : ''} BTC`;
         };
 
@@ -48,16 +45,15 @@ const HomePage = ({ wallet, wallets, onLogout, onSwitchWallet, onCreateWallet, o
                         <div className="card">
                                 <h2>Your Wallet</h2>
                                 <p className="balance">
-                                        {isLoading ? 'Loading balance...' :
-                                                formatBalance(balance)}
+                                        {isLoading ? 'Loading balance...' : formatBalance(balance)}
                                 </p>
                         </div>
                         <select
                                 className="input"
-                                value={wallets.findIndex(w => w.address === wallet.address)}
+                                value={Array.isArray(wallets) ? wallets.findIndex(w => w.address === wallet.address) : -1}
                                 onChange={(e) => onSwitchWallet(Number(e.target.value))}
                         >
-                                {wallets.map((w, index) => (
+                                {Array.isArray(wallets) && wallets.map((w, index) => (
                                         <option key={w.address} value={index}>
                                                 Wallet {index + 1}
                                         </option>

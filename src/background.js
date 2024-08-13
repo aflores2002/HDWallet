@@ -1,13 +1,12 @@
 // src/background.js
 import { generateMnemonic, walletFromSeedPhrase } from './wallet';
-// import { signBtcTransaction } from './transactions/btc';
-// import { getAddressUtxoOrdinalBundles } from './api/ordinals';
-
-// import * as bip39 from 'bip39';
-// import * as hdkey from 'hdkey';
+import { signMessage, verifyMessage } from './MessageSigning';
+import { createPsbt, createDummyPsbt, signPsbt, broadcastTransaction, getPaymentUtxos } from './PsbtService';
 import CryptoJS from 'crypto-js';
+import { derivePublicKey } from './utils/cryptoUtils';
 import { Buffer } from 'buffer';
 import crypto from 'crypto-browserify';
+import * as bitcoin from 'bitcoinjs-lib';
 
 // manage session timeout
 let sessionTimeout = null;
@@ -35,32 +34,7 @@ async function createWallet() {
                 console.error('Error creating wallet:', error);
                 throw error;
         }
-        // const wallet = await walletFromSeedPhrase({ mnemonic, index: 0, network: 'Testnet' });
-        // console.log('Created wallet:', wallet);
-        // // // Store wallet info securely
-        // // chrome.storage.local.set({ wallet: wallet }, () => {
-        // //      console.log('Wallet created and stored');
-        // // });
-        // return {
-        //         mnemonic: wallet.mnemonic,
-        //         wif: wallet.wif,
-        //         address: wallet.address
-        // };
 }
-
-// Function to login with mnemonic
-// async function loginWallet(mnemonic) {
-//         try {
-//                 const wallet = await walletFromSeedPhrase({ mnemonic, index: 0, network: 'Testnet' });
-//                 chrome.storage.local.set({ wallet: wallet }, () => {
-//                         console.log('Wallet logged in and stored');
-//                 });
-//                 return { success: true, wallet };
-//         } catch (error) {
-//                 console.error('Login failed:', error);
-//                 return { success: false };
-//         }
-// }
 
 // Function to get balance
 async function getBalance(address) {
@@ -76,15 +50,22 @@ async function getBalance(address) {
         }
 }
 
-
 function encryptWallet(wallet, password) {
+        console.log('Encrypting wallet:', JSON.stringify(wallet));
         if (!wallet || !wallet.mnemonic || !wallet.wif) {
                 console.error('Invalid wallet data for encryption');
                 return { success: false, error: 'Invalid wallet data' };
         }
         try {
+                console.log('Encrypting mnemonic...');
                 const encryptedMnemonic = CryptoJS.AES.encrypt(wallet.mnemonic, password).toString();
+                console.log('Mnemonic encrypted successfully');
+
+                console.log('Encrypting WIF...');
                 const encryptedWIF = CryptoJS.AES.encrypt(wallet.wif, password).toString();
+                console.log('WIF encrypted successfully');
+
+                console.log('Encryption complete');
                 return {
                         success: true,
                         encryptedWallet: {
@@ -100,29 +81,36 @@ function encryptWallet(wallet, password) {
 }
 
 function decryptWallet(encryptedWallet, password) {
-        console.log('Attempting to decrypt wallet:', encryptedWallet);
+        console.log('Attempting to decrypt wallet:', JSON.stringify(encryptedWallet));
         if (!encryptedWallet || !encryptedWallet.encryptedMnemonic || !encryptedWallet.encryptedWIF) {
                 console.error('Invalid encrypted wallet data');
                 return { success: false, error: 'Invalid wallet data' };
         }
         try {
-                const decryptedMnemonic = CryptoJS.AES.decrypt(encryptedWallet.encryptedMnemonic, password);
-                const mnemonic = decryptedMnemonic.toString(CryptoJS.enc.Utf8);
-
-                const decryptedWIF = CryptoJS.AES.decrypt(encryptedWallet.encryptedWIF, password);
-                const wif = decryptedWIF.toString(CryptoJS.enc.Utf8);
-
-                if (!mnemonic || !wif) {
-                        console.error('Decryption resulted in empty mnemonic or WIF');
-                        return { success: false, error: 'Incorrect password or corrupted data' };
+                console.log('Decrypting mnemonic...');
+                const decryptedMnemonic = CryptoJS.AES.decrypt(encryptedWallet.encryptedMnemonic, password).toString(CryptoJS.enc.Utf8);
+                if (!decryptedMnemonic) {
+                        throw new Error('Failed to decrypt mnemonic');
                 }
-                console.log('Wallet decrypted successfully');
+                console.log('Mnemonic decrypted successfully');
+
+                console.log('Decrypting WIF...');
+                const decryptedWIF = CryptoJS.AES.decrypt(encryptedWallet.encryptedWIF, password).toString(CryptoJS.enc.Utf8);
+                if (!decryptedWIF) {
+                        throw new Error('Failed to decrypt WIF');
+                }
+                console.log('WIF decrypted successfully');
+
+                // Derive public key from WIF
+                const publicKey = derivePublicKey(decryptedWIF);
+
                 return {
                         success: true,
                         wallet: {
-                                mnemonic,
-                                wif,
-                                address: encryptedWallet.address
+                                mnemonic: decryptedMnemonic,
+                                wif: decryptedWIF,
+                                address: encryptedWallet.address,
+                                publicKey: publicKey
                         }
                 };
         } catch (error) {
@@ -211,14 +199,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                                 sendResponse({ success: false, error: 'No wallets found' });
                                 return;
                         }
-                        const decryptionResults = wallets.map(w => {
-                                try {
-                                        return decryptWallet(w, request.password);
-                                } catch (error) {
-                                        console.error('Error decrypting wallet:', error);
-                                        return { success: false, error: 'Decryption error: ' + error.message };
-                                }
-                        });
+                        const decryptionResults = wallets.map(w => decryptWallet(w, request.password));
                         console.log('Decryption results:', decryptionResults);
                         const decryptedWallets = decryptionResults.filter(r => r.success).map(r => r.wallet);
                         if (decryptedWallets.length === 0) {
@@ -259,10 +240,96 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         } else if (request.action === 'clearSession') {
                 clearSession();
                 sendResponse({ success: true });
+        } else if (request.action === 'signMessage') {
+                const { message, wif } = request;
+                console.log('Received sign message request:', { message, wifProvided: !!wif });
+                try {
+                        const signature = signMessage(message, wif);
+                        console.log('Message signed successfully');
+                        console.log('Signature:', signature);
+                        sendResponse({ success: true, signature });
+                } catch (error) {
+                        console.error('Error signing message:', error);
+                        console.error('Error stack:', error.stack);
+                        sendResponse({ success: false, error: error.message });
+                }
+                return true;
+        } else if (request.action === 'verifyMessage') {
+                const { message, address, signature } = request;
+                console.log('Received verify message request:', { message, address, signatureProvided: !!signature });
+                try {
+                        const isValid = verifyMessage(message, address, signature);
+                        console.log('Message verification result:', isValid);
+                        sendResponse({ success: true, isValid });
+                } catch (error) {
+                        console.error('Error verifying message:', error);
+                        console.error('Error stack:', error.stack);
+                        sendResponse({ success: false, error: error.message });
+                }
+                return true;
+        } else if (request.action === 'createAndSignPsbt') {
+                const { paymentAddress, paymentPublicKey, wif } = request;
+                console.log('Received createAndSignPsbt request:', {
+                        paymentAddress,
+                        paymentPublicKeyProvided: !!paymentPublicKey,
+                        wifProvided: !!wif
+                });
+                try {
+                        if (!paymentPublicKey) {
+                                throw new Error('Payment public key is missing');
+                        }
+                        if (!wif) {
+                                throw new Error('WIF is missing');
+                        }
+                        getPaymentUtxos(paymentAddress).then(utxos => {
+                                let psbt;
+                                let isDummy = false;
+                                try {
+                                        if (utxos.length === 0) {
+                                                console.log('No UTXOs available. Creating dummy PSBT for testing.');
+                                                psbt = createDummyPsbt(paymentAddress, paymentPublicKey);
+                                                isDummy = true;
+                                        } else {
+                                                console.log('UTXOs found:', utxos);
+                                                psbt = createPsbt(utxos, request.outputs, paymentAddress, paymentPublicKey);
+                                        }
+                                        console.log('PSBT created successfully');
+                                        const psbtHex = psbt.toHex();
+                                        console.log('Attempting to sign PSBT');
+                                        const signedPsbtHex = signPsbt(psbtHex, wif);
+                                        console.log('PSBT signed successfully');
+                                        sendResponse({ success: true, signedPsbtHex, isDummy });
+                                } catch (error) {
+                                        console.error('Error in PSBT creation or signing:', error);
+                                        sendResponse({ success: false, error: error.message });
+                                }
+                        }).catch(error => {
+                                console.error('Error fetching UTXOs:', error);
+                                sendResponse({ success: false, error: error.message });
+                        });
+                } catch (error) {
+                        console.error('Error in createAndSignPsbt:', error);
+                        sendResponse({ success: false, error: error.message });
+                }
+                return true;
+        } else if (request.action === 'broadcastTransaction') {
+                console.log('Received broadcastTransaction request');
+                const { signedPsbtHex } = request;
+                broadcastTransaction(signedPsbtHex).then(result => {
+                        if (result.success) {
+                                console.log('Transaction broadcasted successfully:', result.txid);
+                                sendResponse({ success: true, txid: result.txid });
+                        } else {
+                                console.error('Error broadcasting transaction:', result.error);
+                                sendResponse({ success: false, error: result.error });
+                        }
+                }).catch(error => {
+                        console.error('Unexpected error in broadcastTransaction:', error);
+                        sendResponse({ success: false, error: 'Unexpected error occurred' });
+                });
+                return true;
         }
 });
-
-//console.log('Background script running')
 
 // Keep the background script alive
 chrome.runtime.onInstalled.addListener(() => {

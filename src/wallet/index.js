@@ -1,9 +1,6 @@
 // src/wallet/index.js
 import * as bitcoin from 'bitcoinjs-lib';
 import * as bip39 from 'bip39';
-// import * as hdkey from 'hdkey';
-// import createHash from 'create-hash';
-// import bs58check from 'bs58check';
 import * as ecc from 'tiny-secp256k1';
 import { BIP32Factory } from 'bip32';
 import ECPairFactory from 'ecpair';
