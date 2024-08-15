@@ -152,20 +152,20 @@ function extendSession() {
 
 // Message handler
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-        console.log('Received message:', request);
-
         handleMessage(request)
-                .then(sendResponse)
+                .then(response => {
+                        console.log('Sending response:', response);
+                        sendResponse(response);
+                })
                 .catch(error => {
                         console.error('Error handling message:', error);
-                        sendResponse({ type: "FROM_EXTENSION", action: "ERROR", message: error.message || 'An error occurred' });
+                        sendResponse({ success: false, error: error.message });
                 });
-
-        return true; // Indicates that the response is sent asynchronously
+        return true;  // Indicates that the response is sent asynchronously
 });
 
 async function handleMessage(request) {
-        console.log('Handling message:', request); // Add this line for debugging
+        console.log('Handling message:', request);
 
         switch (request.type || request.action) {
                 case 'createWallet':
@@ -186,8 +186,13 @@ async function handleMessage(request) {
                         return { success: true };
                 case "FROM_PAGE_CHECK_CONNECTION":
                         return { type: "FROM_EXTENSION", action: "CONNECTION_STATUS", connected: true };
+                case "FROM_PAGE_GET_CURRENT_ADDRESS":
+                        return await getCurrentAddress();
                 case "FROM_PAGE_SIGN_MESSAGE":
                         return await handleSignMessage(request);
+                case "FROM_PAGE_CREATE_PSBT":
+                case 'createPSBT':
+                        return await handleCreatePSBT(request);
                 case "FROM_PAGE_SIGN_PSBT":
                         return await handleSignPSBT(request);
                 case "FROM_PAGE_BROADCAST_PSBT":
@@ -195,6 +200,42 @@ async function handleMessage(request) {
                 default:
                         console.error('Unknown request type:', request.type || request.action);
                         throw new Error("Unknown request type");
+        }
+}
+
+// Function to get the current wallet
+function getCurrentWallet() {
+        return new Promise((resolve, reject) => {
+                chrome.storage.local.get(['sessionCurrentWallet'], (result) => {
+                        if (result.sessionCurrentWallet) {
+                                resolve(result.sessionCurrentWallet);
+                        } else {
+                                reject(new Error("No current wallet available"));
+                        }
+                });
+        });
+}
+// Function to get the current wallet address
+async function getCurrentAddress() {
+        try {
+                const currentWallet = await getCurrentWallet();
+                return { success: true, address: currentWallet.address };
+        } catch (error) {
+                console.error('Error getting current wallet address:', error);
+                return { success: false, error: error.message };
+        }
+}
+
+async function handleCreatePSBT(request) {
+        try {
+                const currentWallet = await getCurrentWallet();
+                const { recipientAddress, amountInSatoshis, feeRate } = request;
+                const senderAddress = request.senderAddress || currentWallet.address;
+                const psbtHex = await createPsbt(senderAddress, recipientAddress, amountInSatoshis, feeRate);
+                return { success: true, psbtHex };
+        } catch (error) {
+                console.error('Error creating PSBT:', error);
+                throw error;
         }
 }
 
@@ -265,38 +306,34 @@ async function handleGetSession() {
 
 async function handleSignMessage(request) {
         const { message } = request;
-        return new Promise((resolve, reject) => {
-                chrome.storage.local.get(['sessionCurrentWallet'], (result) => {
-                        if (result.sessionCurrentWallet && result.sessionCurrentWallet.wif) {
-                                try {
-                                        const signature = signMessage(message, result.sessionCurrentWallet.wif);
-                                        resolve({ type: "FROM_EXTENSION", action: "SIGNATURE_RESULT", signature: signature });
-                                } catch (error) {
-                                        reject(error);
-                                }
-                        } else {
-                                reject(new Error("No wallet available"));
-                        }
-                });
-        });
+        try {
+                const currentWallet = await getCurrentWallet();
+                if (currentWallet && currentWallet.wif) {
+                        const signature = signMessage(message, currentWallet.wif);
+                        return { type: "FROM_EXTENSION", action: "SIGNATURE_RESULT", signature: signature };
+                } else {
+                        throw new Error("No wallet available");
+                }
+        } catch (error) {
+                console.error('Error signing message:', error);
+                throw error;
+        }
 }
 
 async function handleSignPSBT(request) {
         const { psbtHex } = request;
-        return new Promise((resolve, reject) => {
-                chrome.storage.local.get(['sessionCurrentWallet'], (result) => {
-                        if (result.sessionCurrentWallet && result.sessionCurrentWallet.wif) {
-                                try {
-                                        const signedPsbtHex = signPsbt(psbtHex, result.sessionCurrentWallet.wif);
-                                        resolve({ type: "FROM_EXTENSION", action: "PSBT_SIGNED", signedPsbtHex: signedPsbtHex });
-                                } catch (error) {
-                                        reject(error);
-                                }
-                        } else {
-                                reject(new Error("No wallet available"));
-                        }
-                });
-        });
+        try {
+                const currentWallet = await getCurrentWallet();
+                if (currentWallet && currentWallet.wif) {
+                        const signedPsbtHex = signPsbt(psbtHex, currentWallet.wif);
+                        return { type: "FROM_EXTENSION", action: "PSBT_SIGNED", signedPsbtHex: signedPsbtHex };
+                } else {
+                        throw new Error("No wallet available");
+                }
+        } catch (error) {
+                console.error('Error signing PSBT:', error);
+                throw error;
+        }
 }
 
 async function handleBroadcastPSBT(request) {

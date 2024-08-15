@@ -1,3 +1,4 @@
+// src/components/App.js
 import React, { useState, useEffect } from 'react';
 import CreateWallet from './CreateWallet';
 import HomePage from './HomePage';
@@ -7,6 +8,30 @@ import SendBTC from './SendBTC';
 import ReceivePage from './ReceivePage';
 import TestWalletFunctions from './TestWalletFunctions';
 import '../styles.css';
+
+const setCurrentWallet = (wallet) => {
+        return new Promise((resolve, reject) => {
+                chrome.storage.local.set({ sessionCurrentWallet: wallet }, () => {
+                        if (chrome.runtime.lastError) {
+                                reject(new Error(chrome.runtime.lastError.message));
+                        } else {
+                                resolve();
+                        }
+                });
+        });
+};
+
+const getCurrentWallet = () => {
+        return new Promise((resolve, reject) => {
+                chrome.storage.local.get(['sessionCurrentWallet'], (result) => {
+                        if (result.sessionCurrentWallet) {
+                                resolve(result.sessionCurrentWallet);
+                        } else {
+                                reject(new Error("No current wallet available"));
+                        }
+                });
+        });
+};
 
 const App = () => {
         const [wallets, setWallets] = useState([]);
@@ -20,14 +45,21 @@ const App = () => {
                 checkSession();
         }, []);
 
-        const checkSession = () => {
+        const checkSession = async () => {
                 setIsLoading(true);
+                try {
+                        const storedWallet = await getCurrentWallet();
+                        if (storedWallet) {
+                                setCurrentWallet(storedWallet);
+                                setView('home');
+                        }
+                } catch (error) {
+                        console.error('No stored wallet found:', error);
+                }
                 chrome.runtime.sendMessage({ action: 'getSession' }, (response) => {
                         if (response && response.success) {
                                 setWallets(response.wallets || []);
-                                setCurrentWallet(response.currentWallet || null);
                                 setCurrentPassword(response.password || '');
-                                setView('home');
                         }
                         setIsLoading(false);
                 });
@@ -55,7 +87,7 @@ const App = () => {
                 setView('setPassword');
         };
 
-        const handleSetPassword = (password) => {
+        const handleSetPassword = async (password) => {
                 if (!newWallet) {
                         alert('No wallet data available');
                         return;
@@ -65,16 +97,17 @@ const App = () => {
                         action: 'encryptWallet',
                         wallet: newWallet,
                         password: password
-                }, (response) => {
+                }, async (response) => {
                         console.log('Encryption response:', response);
                         if (response && response.success) {
-                                setWallets([...wallets, response.encryptedWallet]);
-                                setCurrentWallet(response.encryptedWallet);
+                                const updatedWallets = [...wallets, response.encryptedWallet];
+                                setWallets(updatedWallets);
+                                await setCurrentWallet(response.encryptedWallet);
                                 setNewWallet(null);
                                 setCurrentPassword(password);
                                 chrome.runtime.sendMessage({
                                         action: 'setSession',
-                                        wallets: [...wallets, response.encryptedWallet],
+                                        wallets: updatedWallets,
                                         currentWallet: response.encryptedWallet,
                                         password
                                 });
@@ -112,7 +145,8 @@ const App = () => {
                 });
         };
 
-        const handleLogout = () => {
+        const handleLogout = async () => {
+                await setCurrentWallet(null);
                 chrome.runtime.sendMessage({ action: 'clearSession' }, () => {
                         setWallets([]);
                         setCurrentWallet(null);
@@ -121,10 +155,10 @@ const App = () => {
                 });
         };
 
-        const handleSwitchWallet = (index) => {
+        const handleSwitchWallet = async (index) => {
                 if (Array.isArray(wallets) && index >= 0 && index < wallets.length) {
                         const newWallet = wallets[index];
-                        setCurrentWallet(newWallet);
+                        await setCurrentWallet(newWallet);
                         chrome.runtime.sendMessage({
                                 action: 'setSession',
                                 wallets: wallets,
