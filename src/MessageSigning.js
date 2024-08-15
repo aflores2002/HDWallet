@@ -47,8 +47,8 @@ export function signMessage(message, wif) {
 
         const signatureBuffer = Buffer.alloc(65);
         signatureBuffer.writeUInt8(31, 0); // recovery id + 27 + 4 (for compressed)
-        signature.slice(0, 32).copy(signatureBuffer, 1);
-        signature.slice(32, 64).copy(signatureBuffer, 33);
+        signature.slice(0, 32).copy(signatureBuffer, 1);  // r value
+        signature.slice(32, 64).copy(signatureBuffer, 33); // s value
 
         return signatureBuffer.toString('base64');
     } catch (error) {
@@ -60,26 +60,31 @@ export function signMessage(message, wif) {
 
 export function verifyMessage(message, address, signature) {
     try {
-        const network = bitcoin.networks.testnet; // or bitcoin.networks.bitcoin for mainnet
+        const network = bitcoin.networks.testnet;
         const messageHash = magicHash(message, network);
 
         const signatureBuffer = Buffer.from(signature, 'base64');
         if (signatureBuffer.length !== 65) throw new Error('Invalid signature length');
 
-        const recoveryId = signatureBuffer[0] - 31;
+        const flagByte = signatureBuffer[0] - 27 - 4;
+        const recoveryId = flagByte & 3;
+        const compressedFlag = !!(flagByte & 4);
+
         const r = signatureBuffer.slice(1, 33);
         const s = signatureBuffer.slice(33);
 
-        const publicKey = ecc.recover(messageHash, Buffer.concat([r, s]), recoveryId, true);
+        const publicKey = ecc.recover(messageHash, Buffer.concat([r, s]), recoveryId, compressedFlag);
 
         const keyPair = ECPair.fromPublicKey(Buffer.from(publicKey));
+
         const p2wpkh = bitcoin.payments.p2wpkh({ pubkey: keyPair.publicKey, network });
         const p2sh = bitcoin.payments.p2sh({ redeem: p2wpkh, network });
+        const p2pkh = bitcoin.payments.p2pkh({ pubkey: keyPair.publicKey, network });
 
         const derivedAddresses = [
-            p2wpkh.address,  // P2WPKH (native SegWit)
-            p2sh.address,    // P2SH-P2WPKH (wrapped SegWit)
-            bitcoin.payments.p2pkh({ pubkey: keyPair.publicKey, network }).address  // P2PKH (legacy)
+            p2wpkh.address,  // Native SegWit (bech32)
+            p2sh.address,    // Nested SegWit
+            p2pkh.address    // Legacy
         ];
 
         console.log('Recovered addresses:', derivedAddresses);

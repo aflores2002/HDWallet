@@ -13,7 +13,6 @@ let sessionTimeout = null;
 
 if (chrome.alarms) {
         chrome.alarms.create('keepAlive', { periodInMinutes: 1 });
-
         chrome.alarms.onAlarm.addListener((alarm) => {
                 if (alarm.name === 'keepAlive') {
                         extendSession();
@@ -151,185 +150,168 @@ function extendSession() {
         });
 }
 
-// Listen for messages from the popup
+// Message handler
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-        if (request.action === 'createWallet') {
-                createWallet().then(sendResponse);
-                return true;
-        } else if (request.action === 'encryptWallet') {
-                console.log('Encrypting wallet', request.wallet);
-                if (!request.wallet || !request.password) {
-                        console.error('Invalid wallet data or password');
-                        sendResponse({ success: false, error: 'Invalid wallet data or password' });
-                        return true;
-                }
-                const encryptionResult = encryptWallet(request.wallet, request.password);
-                if (!encryptionResult.success) {
-                        console.error('Encryption failed', encryptionResult.error);
-                        sendResponse({ success: false, error: encryptionResult.error });
-                        return true;
-                }
+        console.log('Received message:', request);
+
+        handleMessage(request)
+                .then(sendResponse)
+                .catch(error => {
+                        console.error('Error handling message:', error);
+                        sendResponse({ type: "FROM_EXTENSION", action: "ERROR", message: error.message || 'An error occurred' });
+                });
+
+        return true; // Indicates that the response is sent asynchronously
+});
+
+async function handleMessage(request) {
+        console.log('Handling message:', request); // Add this line for debugging
+
+        switch (request.type || request.action) {
+                case 'createWallet':
+                        return await createWallet();
+                case 'encryptWallet':
+                        return await handleEncryptWallet(request);
+                case 'decryptWallets':
+                        return await handleDecryptWallets(request);
+                case 'getBalance':
+                        return await getBalance(request.address);
+                case 'setSession':
+                        setSession(request.wallets, request.currentWallet, request.password);
+                        return { success: true };
+                case 'getSession':
+                        return await handleGetSession();
+                case 'clearSession':
+                        clearSession();
+                        return { success: true };
+                case "FROM_PAGE_CHECK_CONNECTION":
+                        return { type: "FROM_EXTENSION", action: "CONNECTION_STATUS", connected: true };
+                case "FROM_PAGE_SIGN_MESSAGE":
+                        return await handleSignMessage(request);
+                case "FROM_PAGE_SIGN_PSBT":
+                        return await handleSignPSBT(request);
+                case "FROM_PAGE_BROADCAST_PSBT":
+                        return await handleBroadcastPSBT(request);
+                default:
+                        console.error('Unknown request type:', request.type || request.action);
+                        throw new Error("Unknown request type");
+        }
+}
+
+async function handleEncryptWallet(request) {
+        if (!request.wallet || !request.password) {
+                throw new Error('Invalid wallet data or password');
+        }
+        const encryptionResult = encryptWallet(request.wallet, request.password);
+        if (!encryptionResult.success) {
+                throw new Error(encryptionResult.error);
+        }
+        return new Promise((resolve, reject) => {
                 chrome.storage.local.get(['wallets'], (result) => {
                         let wallets = result.wallets || [];
                         wallets.push(encryptionResult.encryptedWallet);
-                        console.log('Storing wallets:', wallets);
                         chrome.storage.local.set({ wallets }, () => {
                                 if (chrome.runtime.lastError) {
-                                        console.error('Error storing wallet:', chrome.runtime.lastError);
-                                        sendResponse({ success: false, error: chrome.runtime.lastError.message });
+                                        reject(new Error(chrome.runtime.lastError.message));
                                 } else {
-                                        console.log('Wallet stored successfully');
-                                        sendResponse({ success: true, encryptedWallet: encryptionResult.encryptedWallet });
+                                        resolve({ success: true, encryptedWallet: encryptionResult.encryptedWallet });
                                 }
                         });
                 });
-                return true;
-        } else if (request.action === 'decryptWallets') {
-                console.log('Decrypting wallets');
+        });
+}
+
+async function handleDecryptWallets(request) {
+        return new Promise((resolve, reject) => {
                 chrome.storage.local.get(['wallets'], (result) => {
-                        console.log('Retrieved wallets:', result.wallets);
                         if (chrome.runtime.lastError) {
-                                console.error('Error retrieving wallets:', chrome.runtime.lastError);
-                                sendResponse({ success: false, error: chrome.runtime.lastError.message });
+                                reject(new Error(chrome.runtime.lastError.message));
                                 return;
                         }
                         const wallets = result.wallets || [];
                         if (wallets.length === 0) {
-                                console.error('No wallets found');
-                                sendResponse({ success: false, error: 'No wallets found' });
+                                reject(new Error('No wallets found'));
                                 return;
                         }
                         const decryptionResults = wallets.map(w => decryptWallet(w, request.password));
-                        console.log('Decryption results:', decryptionResults);
                         const decryptedWallets = decryptionResults.filter(r => r.success).map(r => r.wallet);
                         if (decryptedWallets.length === 0) {
-                                console.error('Failed to decrypt any wallets');
                                 const errors = decryptionResults.map(r => r.error).join('; ');
-                                sendResponse({ success: false, error: 'Failed to decrypt any wallets: ' + errors });
+                                reject(new Error('Failed to decrypt any wallets: ' + errors));
                         } else {
-                                console.log('Successfully decrypted wallets:', decryptedWallets);
-                                sendResponse({ success: true, wallets: decryptedWallets });
+                                resolve({ success: true, wallets: decryptedWallets });
                         }
                 });
-                return true;
-        } else if (request.action === 'getBalance') {
-                console.log('Received getBalance message for address:', request.address);
-                getBalance(request.address).then(balance => {
-                        console.log('Sending balance response:', balance);
-                        sendResponse(balance);
-                });
-                return true;
-        } else if (request.action === 'setSession') {
-                setSession(request.wallets, request.currentWallet, request.password);
-                sendResponse({ success: true });
-        } else if (request.action === 'getSession') {
+        });
+}
+
+async function handleGetSession() {
+        return new Promise((resolve) => {
                 chrome.storage.local.get(['sessionWallets', 'sessionCurrentWallet', 'sessionPassword'], (result) => {
                         if (result.sessionWallets && result.sessionCurrentWallet && result.sessionPassword) {
                                 extendSession();
-                                sendResponse({
+                                resolve({
                                         success: true,
                                         wallets: result.sessionWallets,
                                         currentWallet: result.sessionCurrentWallet,
                                         password: result.sessionPassword
                                 });
                         } else {
-                                sendResponse({ success: false });
+                                resolve({ success: false });
                         }
                 });
-                return true;  // Indicates we will send a response asynchronously
-        } else if (request.action === 'clearSession') {
-                clearSession();
-                sendResponse({ success: true });
-        } else if (request.action === 'signMessage') {
-                const { message, wif } = request;
-                console.log('Received sign message request:', { message, wifProvided: !!wif });
-                try {
-                        const signature = signMessage(message, wif);
-                        console.log('Message signed successfully');
-                        console.log('Signature:', signature);
-                        sendResponse({ success: true, signature });
-                } catch (error) {
-                        console.error('Error signing message:', error);
-                        console.error('Error stack:', error.stack);
-                        sendResponse({ success: false, error: error.message });
-                }
-                return true;
-        } else if (request.action === 'verifyMessage') {
-                const { message, address, signature } = request;
-                console.log('Received verify message request:', { message, address, signatureProvided: !!signature });
-                try {
-                        const isValid = verifyMessage(message, address, signature);
-                        console.log('Message verification result:', isValid);
-                        sendResponse({ success: true, isValid });
-                } catch (error) {
-                        console.error('Error verifying message:', error);
-                        console.error('Error stack:', error.stack);
-                        sendResponse({ success: false, error: error.message });
-                }
-                return true;
-        } else if (request.action === 'createAndSignPsbt') {
-                const { paymentAddress, paymentPublicKey, wif } = request;
-                console.log('Received createAndSignPsbt request:', {
-                        paymentAddress,
-                        paymentPublicKeyProvided: !!paymentPublicKey,
-                        wifProvided: !!wif
-                });
-                try {
-                        if (!paymentPublicKey) {
-                                throw new Error('Payment public key is missing');
-                        }
-                        if (!wif) {
-                                throw new Error('WIF is missing');
-                        }
-                        getPaymentUtxos(paymentAddress).then(utxos => {
-                                let psbt;
-                                let isDummy = false;
+        });
+}
+
+async function handleSignMessage(request) {
+        const { message } = request;
+        return new Promise((resolve, reject) => {
+                chrome.storage.local.get(['sessionCurrentWallet'], (result) => {
+                        if (result.sessionCurrentWallet && result.sessionCurrentWallet.wif) {
                                 try {
-                                        if (utxos.length === 0) {
-                                                console.log('No UTXOs available. Creating dummy PSBT for testing.');
-                                                psbt = createDummyPsbt(paymentAddress, paymentPublicKey);
-                                                isDummy = true;
-                                        } else {
-                                                console.log('UTXOs found:', utxos);
-                                                psbt = createPsbt(utxos, request.outputs, paymentAddress, paymentPublicKey);
-                                        }
-                                        console.log('PSBT created successfully');
-                                        const psbtHex = psbt.toHex();
-                                        console.log('Attempting to sign PSBT');
-                                        const signedPsbtHex = signPsbt(psbtHex, wif);
-                                        console.log('PSBT signed successfully');
-                                        sendResponse({ success: true, signedPsbtHex, isDummy });
+                                        const signature = signMessage(message, result.sessionCurrentWallet.wif);
+                                        resolve({ type: "FROM_EXTENSION", action: "SIGNATURE_RESULT", signature: signature });
                                 } catch (error) {
-                                        console.error('Error in PSBT creation or signing:', error);
-                                        sendResponse({ success: false, error: error.message });
+                                        reject(error);
                                 }
-                        }).catch(error => {
-                                console.error('Error fetching UTXOs:', error);
-                                sendResponse({ success: false, error: error.message });
-                        });
-                } catch (error) {
-                        console.error('Error in createAndSignPsbt:', error);
-                        sendResponse({ success: false, error: error.message });
-                }
-                return true;
-        } else if (request.action === 'broadcastTransaction') {
-                console.log('Received broadcastTransaction request');
-                const { signedPsbtHex } = request;
-                broadcastTransaction(signedPsbtHex).then(result => {
-                        if (result.success) {
-                                console.log('Transaction broadcasted successfully:', result.txid);
-                                sendResponse({ success: true, txid: result.txid });
                         } else {
-                                console.error('Error broadcasting transaction:', result.error);
-                                sendResponse({ success: false, error: result.error });
+                                reject(new Error("No wallet available"));
                         }
-                }).catch(error => {
-                        console.error('Unexpected error in broadcastTransaction:', error);
-                        sendResponse({ success: false, error: 'Unexpected error occurred' });
                 });
-                return true;
+        });
+}
+
+async function handleSignPSBT(request) {
+        const { psbtHex } = request;
+        return new Promise((resolve, reject) => {
+                chrome.storage.local.get(['sessionCurrentWallet'], (result) => {
+                        if (result.sessionCurrentWallet && result.sessionCurrentWallet.wif) {
+                                try {
+                                        const signedPsbtHex = signPsbt(psbtHex, result.sessionCurrentWallet.wif);
+                                        resolve({ type: "FROM_EXTENSION", action: "PSBT_SIGNED", signedPsbtHex: signedPsbtHex });
+                                } catch (error) {
+                                        reject(error);
+                                }
+                        } else {
+                                reject(new Error("No wallet available"));
+                        }
+                });
+        });
+}
+
+async function handleBroadcastPSBT(request) {
+        const { psbtHex } = request;
+        try {
+                const result = await broadcastTransaction(psbtHex);
+                if (result.success) {
+                        return { type: "FROM_EXTENSION", action: "PSBT_BROADCASTED", txid: result.txid };
+                } else {
+                        throw new Error(result.error);
+                }
+        } catch (error) {
+                throw new Error('Unexpected error in broadcastTransaction: ' + error.message);
         }
-});
+}
 
 // Keep the background script alive
 chrome.runtime.onInstalled.addListener(() => {

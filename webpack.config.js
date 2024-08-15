@@ -5,9 +5,13 @@ const CopyWebpackPlugin = require('copy-webpack-plugin');
 const { CleanWebpackPlugin } = require('clean-webpack-plugin');
 
 module.exports = {
+
+        devtool: 'inline-source-map', // or 'cheap-source-map'
+
         entry: {
                 popup: './src/popup.js',
-                background: './src/background.js'
+                background: './src/background.js',
+                contentScript: './src/contentScript.js'
         },
         output: {
                 path: path.resolve(__dirname, 'dist'),

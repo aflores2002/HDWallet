@@ -3,7 +3,20 @@
   "name": "HD Wallet",
   "version": "1.0",
   "description": "A simplified Bitcoin HD wallet",
-  "permissions": ["storage", "alarms"],
+  "permissions": [
+    "storage",
+    "alarms",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "http://localhost:8000/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["http://localhost:8000/*"],
+      "js": ["contentScript.js"]
+    }
+  ],
   "action": {
     "default_popup": "popup.html"
   },
@@ -12,5 +25,14 @@
   },
   "content_security_policy": {
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
-  }
+  },
+  "externally_connectable": {
+    "matches": ["http://localhost:8000/*"]
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["popup.html", "popup.js", "styles.css"],
+      "matches": ["http://localhost:8000/*"]
+    }
+  ]
 }
