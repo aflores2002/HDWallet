@@ -6,7 +6,8 @@
   "permissions": [
     "storage",
     "alarms",
-    "activeTab"
+    "activeTab",
+    "windows"
   ],
   "host_permissions": [
     "http://localhost:8000/*"

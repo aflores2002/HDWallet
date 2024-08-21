@@ -1,7 +1,7 @@
 // src/background.js
 import { generateMnemonic, walletFromSeedPhrase } from './wallet';
 import { signMessage, verifyMessage } from './MessageSigning';
-import { createPsbt, createDummyPsbt, signPsbt, broadcastTransaction, getPaymentUtxos } from './PsbtService';
+import { createPsbt, signPsbt, broadcastTransaction, rejectPsbt, resetUtxoState } from './PsbtService.js';
 import CryptoJS from 'crypto-js';
 import { derivePublicKey } from './utils/cryptoUtils';
 import { Buffer } from 'buffer';
@@ -152,9 +152,9 @@ function extendSession() {
 
 // Message handler
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-        handleMessage(request)
+        handleMessage(request, sender)
                 .then(response => {
-                        console.log('Sending response:', response);
+                        console.log('Sending response:', response);  // Debug log
                         sendResponse(response);
                 })
                 .catch(error => {
@@ -163,45 +163,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 });
         return true;  // Indicates that the response is sent asynchronously
 });
-
-async function handleMessage(request) {
-        console.log('Handling message:', request);
-
-        switch (request.type || request.action) {
-                case 'createWallet':
-                        return await createWallet();
-                case 'encryptWallet':
-                        return await handleEncryptWallet(request);
-                case 'decryptWallets':
-                        return await handleDecryptWallets(request);
-                case 'getBalance':
-                        return await getBalance(request.address);
-                case 'setSession':
-                        setSession(request.wallets, request.currentWallet, request.password);
-                        return { success: true };
-                case 'getSession':
-                        return await handleGetSession();
-                case 'clearSession':
-                        clearSession();
-                        return { success: true };
-                case "FROM_PAGE_CHECK_CONNECTION":
-                        return { type: "FROM_EXTENSION", action: "CONNECTION_STATUS", connected: true };
-                case "FROM_PAGE_GET_CURRENT_ADDRESS":
-                        return await getCurrentAddress();
-                case "FROM_PAGE_SIGN_MESSAGE":
-                        return await handleSignMessage(request);
-                case "FROM_PAGE_CREATE_PSBT":
-                case 'createPSBT':
-                        return await handleCreatePSBT(request);
-                case "FROM_PAGE_SIGN_PSBT":
-                        return await handleSignPSBT(request);
-                case "FROM_PAGE_BROADCAST_PSBT":
-                        return await handleBroadcastPSBT(request);
-                default:
-                        console.error('Unknown request type:', request.type || request.action);
-                        throw new Error("Unknown request type");
-        }
-}
 
 // Function to get the current wallet
 function getCurrentWallet() {
@@ -231,11 +192,98 @@ async function handleCreatePSBT(request) {
                 const currentWallet = await getCurrentWallet();
                 const { recipientAddress, amountInSatoshis, feeRate } = request;
                 const senderAddress = request.senderAddress || currentWallet.address;
-                const psbtHex = await createPsbt(senderAddress, recipientAddress, amountInSatoshis, feeRate);
+                const { psbtHex, usedUtxos } = await createPsbt(senderAddress, recipientAddress, amountInSatoshis, feeRate);
+
+                // Store the used UTXOs temporarily
+                await chrome.storage.local.set({ tempReservedUtxos: usedUtxos });
+
+                console.log('PSBT created and UTXOs reserved:', { psbtHex, usedUtxos });
                 return { success: true, psbtHex };
         } catch (error) {
                 console.error('Error creating PSBT:', error);
-                throw error;
+                return { success: false, error: error.message };
+        }
+}
+
+async function handleSignPSBT(request) {
+        try {
+                // Show a confirmation dialog to the user
+                const userConfirmation = await showConfirmationDialog({
+                        type: 'signPSBT',
+                        psbtHex: request.psbtHex
+                });
+                console.log('User confirmation result for PSBT signing:', userConfirmation);
+
+                if (!userConfirmation.confirmed) {
+                        console.log('User rejected PSBT signing');
+                        return await handleRejectPSBT(request);
+                }
+
+                console.log('User confirmed, proceeding with PSBT signing');
+                const { psbtHex } = request;
+                const currentWallet = await getCurrentWallet();
+                if (currentWallet && currentWallet.wif) {
+                        const signedPsbtHex = signPsbt(psbtHex, currentWallet.wif);
+                        console.log('PSBT signed successfully');
+                        return {
+                                type: "FROM_EXTENSION",
+                                action: "PSBT_SIGNED",
+                                success: true,
+                                signedPsbtHex: signedPsbtHex
+                        };
+                } else {
+                        throw new Error("No wallet available");
+                }
+        } catch (error) {
+                console.error('Error signing PSBT:', error);
+                return await handleRejectPSBT(request);
+        }
+}
+
+async function handleRejectPSBT(request) {
+        console.log('Handling PSBT rejection');
+        try {
+                const { psbtHex } = request;
+                rejectPsbt(psbtHex);
+                await chrome.storage.local.remove('tempReservedUtxos');
+                console.log('PSBT rejected and UTXOs released');
+                return {
+                        type: "FROM_EXTENSION",
+                        action: "PSBT_REJECTED",
+                        success: false,
+                        message: "User rejected the request or an error occurred"
+                };
+        } catch (error) {
+                console.error('Error rejecting PSBT:', error);
+                return {
+                        type: "FROM_EXTENSION",
+                        action: "PSBT_REJECTION_ERROR",
+                        success: false,
+                        message: `Error rejecting PSBT: ${error.message}`
+                };
+        }
+}
+
+async function handleBroadcastPSBT(request) {
+        try {
+                const { psbtHex } = request;
+                const result = await broadcastTransaction(psbtHex);
+                if (result.success) {
+                        // Clear the reserved UTXOs after successful broadcast
+                        await chrome.storage.local.remove('tempReservedUtxos');
+                        console.log('Transaction broadcast successfully, UTXOs cleared');
+                        return {
+                                type: "FROM_EXTENSION",
+                                action: "PSBT_BROADCASTED",
+                                success: true,
+                                txid: result.txid
+                        };
+                } else {
+                        throw new Error(result.error);
+                }
+        } catch (error) {
+                console.error('Error broadcasting PSBT:', error);
+                return await handleRejectPSBT(request);
         }
 }
 
@@ -305,48 +353,113 @@ async function handleGetSession() {
 }
 
 async function handleSignMessage(request) {
-        const { message } = request;
         try {
+                // Show a confirmation dialog to the user
+                const userConfirmation = await showConfirmationDialog({
+                        type: 'signMessage',
+                        message: request.message
+                });
+                console.log('User confirmation result:', userConfirmation);  // Debug log
+
+                if (!userConfirmation.confirmed) {
+                        console.log('User rejected the request');
+                        return { success: false, message: "User rejected the request" };
+                }
+
+                console.log('User confirmed, proceeding with message signing');
+                const { message } = request;
                 const currentWallet = await getCurrentWallet();
                 if (currentWallet && currentWallet.wif) {
                         const signature = signMessage(message, currentWallet.wif);
-                        return { type: "FROM_EXTENSION", action: "SIGNATURE_RESULT", signature: signature };
+                        console.log('Message signed, signature:', signature);  // Debug log
+                        return {
+                                type: "FROM_EXTENSION",
+                                action: "SIGNATURE_RESULT",
+                                success: true,
+                                signature: signature,
+                                address: currentWallet.address
+                        };
                 } else {
                         throw new Error("No wallet available");
                 }
         } catch (error) {
                 console.error('Error signing message:', error);
-                throw error;
+                return { success: false, error: error.message };
         }
 }
 
-async function handleSignPSBT(request) {
-        const { psbtHex } = request;
-        try {
-                const currentWallet = await getCurrentWallet();
-                if (currentWallet && currentWallet.wif) {
-                        const signedPsbtHex = signPsbt(psbtHex, currentWallet.wif);
-                        return { type: "FROM_EXTENSION", action: "PSBT_SIGNED", signedPsbtHex: signedPsbtHex };
-                } else {
-                        throw new Error("No wallet available");
-                }
-        } catch (error) {
-                console.error('Error signing PSBT:', error);
-                throw error;
-        }
+async function showConfirmationDialog(request) {
+        return new Promise((resolve) => {
+                chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
+                        const activeTab = tabs[0];
+                        chrome.tabs.sendMessage(activeTab.id, {
+                                action: "showConfirmation",
+                                request: request
+                        }, function (response) {
+                                console.log('Confirmation dialog response:', response);
+                                resolve(response);
+                        });
+                });
+        });
 }
 
-async function handleBroadcastPSBT(request) {
-        const { psbtHex } = request;
-        try {
-                const result = await broadcastTransaction(psbtHex);
-                if (result.success) {
-                        return { type: "FROM_EXTENSION", action: "PSBT_BROADCASTED", txid: result.txid };
-                } else {
-                        throw new Error(result.error);
-                }
-        } catch (error) {
-                throw new Error('Unexpected error in broadcastTransaction: ' + error.message);
+async function handleMessage(request) {
+        console.log('Handling message:', request);
+
+        switch (request.type || request.action) {
+                case 'createWallet':
+                        return await createWallet();
+
+                case 'encryptWallet':
+                        return await handleEncryptWallet(request);
+
+                case 'decryptWallets':
+                        return await handleDecryptWallets(request);
+
+                case 'getBalance':
+                        return await getBalance(request.address);
+
+                case 'setSession':
+                        setSession(request.wallets, request.currentWallet, request.password);
+                        return { success: true };
+
+                case 'getSession':
+                        return await handleGetSession();
+
+                case 'clearSession':
+                        clearSession();
+                        return { success: true };
+
+                case "FROM_PAGE_CHECK_CONNECTION":
+                        return { type: "FROM_EXTENSION", action: "CONNECTION_STATUS", connected: true };
+
+                case "FROM_PAGE_GET_CURRENT_ADDRESS":
+                        return await getCurrentAddress();
+
+                case "FROM_PAGE_SIGN_MESSAGE":
+                        return await handleSignMessage(request);
+
+                case 'createPSBT':
+                case "FROM_PAGE_CREATE_PSBT":
+                        return await handleCreatePSBT(request);
+
+                case "FROM_PAGE_SIGN_PSBT":
+                        return await handleSignPSBT(request);
+
+                case "FROM_PAGE_BROADCAST_PSBT":
+                        return await handleBroadcastPSBT(request);
+
+                case "FROM_PAGE_REJECT_PSBT":
+                        return handleRejectPSBT(request);
+
+                case "FROM_PAGE_RESET_UTXO_STATE":
+                        resetUtxoState();
+                        await chrome.storage.local.remove('tempReservedUtxos');
+                        return { success: true, message: 'UTXO state reset' };
+
+                default:
+                        throw new Error(`Unknown request type: ${request.type || request.action}`);
+
         }
 }
 

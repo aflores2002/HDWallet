@@ -6,7 +6,6 @@ import Login from './Login';
 import SetPassword from './SetPassword';
 import SendBTC from './SendBTC';
 import ReceivePage from './ReceivePage';
-import TestWalletFunctions from './TestWalletFunctions';
 import '../styles.css';
 
 const setCurrentWallet = (wallet) => {
@@ -226,18 +225,15 @@ const App = () => {
                                 )}
                                 {view === 'setPassword' && <SetPassword onSetPassword={handleSetPassword} />}
                                 {view === 'home' && currentWallet && (
-                                        <>
-                                                <HomePage
-                                                        wallet={currentWallet}
-                                                        wallets={wallets}
-                                                        onLogout={handleLogout}
-                                                        onSwitchWallet={handleSwitchWallet}
-                                                        onCreateWallet={handleCreateAdditionalWallet}
-                                                        onSend={() => setView('send')}
-                                                        onReceive={() => setView('receive')}
-                                                />
-                                                <TestWalletFunctions wallet={currentWallet} />
-                                        </>
+                                        <HomePage
+                                                wallet={currentWallet}
+                                                wallets={wallets}
+                                                onLogout={handleLogout}
+                                                onSwitchWallet={handleSwitchWallet}
+                                                onCreateWallet={handleCreateAdditionalWallet}
+                                                onSend={() => setView('send')}
+                                                onReceive={() => setView('receive')}
+                                        />
                                 )}
                                 {view === 'login' && <Login onLogin={handleLogin} onCreateWallet={handleCreateWallet} />}
                                 {view === 'send' && currentWallet && <SendBTC wallet={currentWallet} onReturn={() => setView('home')} />}
