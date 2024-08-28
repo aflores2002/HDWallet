@@ -4,30 +4,36 @@ import TransactionHistory from './TransactionHistory';
 const HomePage = ({ wallet, wallets, onLogout, onSwitchWallet, onCreateWallet, onSend, onReceive }) => {
         const [balance, setBalance] = useState(null);
         const [isLoading, setIsLoading] = useState(true);
+        const [error, setError] = useState(null);
         const [showTransactionHistory, setShowTransactionHistory] = useState(false);
 
         useEffect(() => {
                 if (wallet && wallet.address) {
-                        setIsLoading(true);
-                        console.log('Fetching balance for address:', wallet.address);
-                        chrome.runtime.sendMessage({ action: 'getBalance', address: wallet.address }, (response) => {
-                                console.log('Received balance response:', response);
-                                setBalance(response);
-                                setIsLoading(false);
-                        });
+                        fetchBalance(wallet.address);
                 }
         }, [wallet]);
+
+        const fetchBalance = (address) => {
+                setIsLoading(true);
+                setError(null);
+                chrome.runtime.sendMessage({ action: 'getBalance', address }, (response) => {
+                        console.log('Balance response:', response);
+                        if (chrome.runtime.lastError) {
+                                console.error('Error fetching balance:', chrome.runtime.lastError);
+                                setError('Failed to fetch balance');
+                        } else if (response.success && typeof response.balance === 'number') {
+                                setBalance(response.balance);
+                        } else {
+                                setError(response.error || 'Failed to fetch balance');
+                        }
+                        setIsLoading(false);
+                });
+        };
 
         const formatBalance = (balance) => {
                 if (balance === null || balance === undefined) return 'Error fetching balance';
                 if (typeof balance !== 'number') return 'Invalid balance data';
-                if (balance === 0) return '0 BTC';
-
-                const balanceStr = balance.toString();
-                const [intPart, fracPart] = balanceStr.split('.');
-                const trimmedFracPart = fracPart ? fracPart.replace(/0+$/, '') : '';
-
-                return `${intPart}${trimmedFracPart ? '.' + trimmedFracPart : ''} BTC`;
+                return balance.toFixed(8) + ' BTC';
         };
 
         console.log('Current balance state:', balance);
@@ -45,8 +51,11 @@ const HomePage = ({ wallet, wallets, onLogout, onSwitchWallet, onCreateWallet, o
                         <div className="card">
                                 <h2>Your Wallet</h2>
                                 <p className="balance">
-                                        {isLoading ? 'Loading balance...' : formatBalance(balance)}
+                                        {isLoading ? 'Loading balance...' :
+                                                error ? `Error: ${error}` :
+                                                        `Balance: ${formatBalance(balance)}`}
                                 </p>
+                                <button className="btn" onClick={() => fetchBalance(wallet.address)}>Refresh Balance</button>
                         </div>
                         <select
                                 className="input"

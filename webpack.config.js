@@ -51,6 +51,7 @@ module.exports = {
                 new CopyWebpackPlugin({
                         patterns: [
                                 { from: 'src/manifest.json', to: '.' },
+                                { from: 'src/bitcoinProvider.js', to: '.' }
                         ],
                 }),
                 new webpack.ProvidePlugin({

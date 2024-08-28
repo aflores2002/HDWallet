@@ -7,15 +7,18 @@
     "storage",
     "alarms",
     "activeTab",
-    "windows"
+    "windows",
+    "tabs"
   ],
   "host_permissions": [
-    "http://localhost:8000/*"
+    "http://localhost:8000/*",
+    "https://api.blockcypher.com/"
   ],
   "content_scripts": [
     {
-      "matches": ["http://localhost:8000/*"],
-      "js": ["contentScript.js"]
+      "matches": ["<all_urls>"],
+      "js": ["contentScript.js"],
+      "run_at": "document_idle"
     }
   ],
   "action": {
@@ -28,12 +31,12 @@
     "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
   },
   "externally_connectable": {
-    "matches": ["http://localhost:8000/*"]
+    "matches": ["<all_urls>"]
   },
   "web_accessible_resources": [
     {
-      "resources": ["popup.html", "popup.js", "styles.css"],
-      "matches": ["http://localhost:8000/*"]
+      "resources": ["popup.html", "popup.js", "styles.css", "bitcoinProvider.js"],
+      "matches": ["<all_urls>"]
     }
   ]
 }

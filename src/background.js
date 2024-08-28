@@ -8,6 +8,16 @@ import { Buffer } from 'buffer';
 import crypto from 'crypto-browserify';
 import * as bitcoin from 'bitcoinjs-lib';
 
+let contentScriptReady = false;
+
+// Listen for content script loaded message
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+        if (message.type === 'CONTENT_SCRIPT_LOADED') {
+                console.log('Content script loaded in tab:', sender.tab.id);
+                contentScriptReady = true;
+        }
+});
+
 // manage session timeout
 let sessionTimeout = null;
 
@@ -40,12 +50,26 @@ async function getBalance(address) {
         console.log('getBalance called for address:', address);
         try {
                 const response = await fetch(`https://api.blockcypher.com/v1/btc/test3/addrs/${address}/balance`);
+                if (!response.ok) {
+                        throw new Error(`HTTP error! status: ${response.status}`);
+                }
                 const data = await response.json();
                 console.log('Balance data received:', data);
-                return data.balance / 100000000; // Convert satoshis to BTC
+                const balanceInBTC = data.balance / 100000000; // Convert satoshis to BTC
+                return { success: true, balance: balanceInBTC };
         } catch (error) {
                 console.error('Error fetching balance:', error);
-                return null;
+                return { success: false, error: error.message };
+        }
+}
+
+async function handleGetBalance(address) {
+        try {
+                const balance = await getBalance(address);
+                return balance;
+        } catch (error) {
+                console.error('Error in handleGetBalance:', error);
+                return { success: false, error: error.message };
         }
 }
 
@@ -150,11 +174,22 @@ function extendSession() {
         });
 }
 
+// Add this message listener in your background script
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+        if (request.contentScriptQuery == "fetchBalance") {
+                fetch(request.url)
+                        .then(response => response.json())
+                        .then(data => sendResponse(data))
+                        .catch(error => sendResponse({ error: error.toString() }));
+                return true;  // Will respond asynchronously
+        }
+});
+
 // Message handler
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         handleMessage(request, sender)
                 .then(response => {
-                        console.log('Sending response:', response);  // Debug log
+                        console.log('Sending response:', response);
                         sendResponse(response);
                 })
                 .catch(error => {
@@ -187,11 +222,9 @@ async function getCurrentAddress() {
         }
 }
 
-async function handleCreatePSBT(request) {
+async function handleCreatePSBT(senderAddress, recipientAddress, amountInSatoshis, feeRate = 1) {
         try {
-                const currentWallet = await getCurrentWallet();
-                const { recipientAddress, amountInSatoshis, feeRate } = request;
-                const senderAddress = request.senderAddress || currentWallet.address;
+                console.log('handleCreatePSBT called with params:', { senderAddress, recipientAddress, amountInSatoshis, feeRate });
                 const { psbtHex, usedUtxos } = await createPsbt(senderAddress, recipientAddress, amountInSatoshis, feeRate);
 
                 // Store the used UTXOs temporarily
@@ -205,68 +238,84 @@ async function handleCreatePSBT(request) {
         }
 }
 
-async function handleSignPSBT(request) {
+async function handleSignPsbt(request) {
         try {
-                // Show a confirmation dialog to the user
+                const psbtHex = request.params[0];
+                if (!psbtHex || typeof psbtHex !== 'string') {
+                        throw new Error("Invalid PSBT provided for signing");
+                }
+
                 const userConfirmation = await showConfirmationDialog({
                         type: 'signPSBT',
-                        psbtHex: request.psbtHex
+                        psbtHex: psbtHex
                 });
+
                 console.log('User confirmation result for PSBT signing:', userConfirmation);
 
-                if (!userConfirmation.confirmed) {
-                        console.log('User rejected PSBT signing');
-                        return await handleRejectPSBT(request);
+                if (!userConfirmation || !userConfirmation.confirmed) {
+                        console.log('User rejected the request');
+                        return await handleRejectPSBT({ psbtHex });
                 }
 
                 console.log('User confirmed, proceeding with PSBT signing');
-                const { psbtHex } = request;
                 const currentWallet = await getCurrentWallet();
                 if (currentWallet && currentWallet.wif) {
                         const signedPsbtHex = signPsbt(psbtHex, currentWallet.wif);
                         console.log('PSBT signed successfully');
-                        return {
-                                type: "FROM_EXTENSION",
-                                action: "PSBT_SIGNED",
-                                success: true,
-                                signedPsbtHex: signedPsbtHex
-                        };
+                        return { success: true, signedPsbtHex: signedPsbtHex };
                 } else {
                         throw new Error("No wallet available");
                 }
         } catch (error) {
                 console.error('Error signing PSBT:', error);
-                return await handleRejectPSBT(request);
+                return { success: false, error: error.message };
         }
 }
 
 async function handleRejectPSBT(request) {
         console.log('Handling PSBT rejection');
         try {
-                const { psbtHex } = request;
-                rejectPsbt(psbtHex);
+                const psbtHex = request.params ? request.params[0] : request.psbtHex;
+                if (!psbtHex) {
+                        console.warn('No PSBT provided for rejection, releasing all reserved UTXOs');
+                        await chrome.storage.local.remove('tempReservedUtxos');
+                        return {
+                                success: true,
+                                message: "No PSBT to reject, all reserved UTXOs released"
+                        };
+                }
+                await rejectPsbt(psbtHex);
                 await chrome.storage.local.remove('tempReservedUtxos');
                 console.log('PSBT rejected and UTXOs released');
                 return {
-                        type: "FROM_EXTENSION",
-                        action: "PSBT_REJECTED",
-                        success: false,
-                        message: "User rejected the request or an error occurred"
+                        success: true,
+                        message: "PSBT rejected and UTXOs released"
                 };
         } catch (error) {
                 console.error('Error rejecting PSBT:', error);
+                // Attempt to release UTXOs even if there's an error
+                await chrome.storage.local.remove('tempReservedUtxos');
                 return {
-                        type: "FROM_EXTENSION",
-                        action: "PSBT_REJECTION_ERROR",
                         success: false,
-                        message: `Error rejecting PSBT: ${error.message}`
+                        error: `Error rejecting PSBT: ${error.message}`
                 };
         }
 }
 
 async function handleBroadcastPSBT(request) {
         try {
-                const { psbtHex } = request;
+                console.log('handleBroadcastPSBT received request:', request);
+                let psbtHex;
+                if (request.params && Array.isArray(request.params) && request.params.length > 0) {
+                        psbtHex = request.params[0];
+                } else if (request.psbtHex) {
+                        psbtHex = request.psbtHex;
+                }
+                console.log('Extracted psbtHex:', psbtHex);
+
+                if (!psbtHex || typeof psbtHex !== 'string') {
+                        throw new Error('No valid PSBT provided for broadcasting');
+                }
                 const result = await broadcastTransaction(psbtHex);
                 if (result.success) {
                         // Clear the reserved UTXOs after successful broadcast
@@ -354,27 +403,34 @@ async function handleGetSession() {
 
 async function handleSignMessage(request) {
         try {
-                // Show a confirmation dialog to the user
+                console.log('handleSignMessage request:', request);  // Add this line for debugging
+
+                let message;
+                if (request.params && request.params.length > 0) {
+                        message = request.params[0];
+                } else if (request.message) {
+                        message = request.message;
+                } else {
+                        throw new Error("No message provided for signing");
+                }
+
                 const userConfirmation = await showConfirmationDialog({
                         type: 'signMessage',
-                        message: request.message
+                        message: message
                 });
-                console.log('User confirmation result:', userConfirmation);  // Debug log
+                console.log('User confirmation result:', userConfirmation);
 
-                if (!userConfirmation.confirmed) {
+                if (!userConfirmation || !userConfirmation.confirmed) {
                         console.log('User rejected the request');
                         return { success: false, message: "User rejected the request" };
                 }
 
                 console.log('User confirmed, proceeding with message signing');
-                const { message } = request;
                 const currentWallet = await getCurrentWallet();
                 if (currentWallet && currentWallet.wif) {
                         const signature = signMessage(message, currentWallet.wif);
-                        console.log('Message signed, signature:', signature);  // Debug log
+                        console.log('Message signed, signature:', signature);
                         return {
-                                type: "FROM_EXTENSION",
-                                action: "SIGNATURE_RESULT",
                                 success: true,
                                 signature: signature,
                                 address: currentWallet.address
@@ -388,16 +444,32 @@ async function handleSignMessage(request) {
         }
 }
 
+
 async function showConfirmationDialog(request) {
-        return new Promise((resolve) => {
+        return new Promise((resolve, reject) => {
                 chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
+                        if (chrome.runtime.lastError) {
+                                console.error('Error querying tabs:', chrome.runtime.lastError);
+                                reject(new Error('Error querying tabs'));
+                                return;
+                        }
+                        if (tabs.length === 0) {
+                                console.error('No active tab found');
+                                reject(new Error('No active tab found'));
+                                return;
+                        }
                         const activeTab = tabs[0];
                         chrome.tabs.sendMessage(activeTab.id, {
                                 action: "showConfirmation",
                                 request: request
                         }, function (response) {
-                                console.log('Confirmation dialog response:', response);
-                                resolve(response);
+                                if (chrome.runtime.lastError) {
+                                        console.error('Error sending message to content script:', chrome.runtime.lastError);
+                                        reject(new Error('Error sending message to content script'));
+                                } else {
+                                        console.log('Confirmation dialog response:', response);
+                                        resolve(response);
+                                }
                         });
                 });
         });
@@ -406,7 +478,41 @@ async function showConfirmationDialog(request) {
 async function handleMessage(request) {
         console.log('Handling message:', request);
 
-        switch (request.type || request.action) {
+        switch (request.method || request.type || request.action) {
+                case 'CONTENT_SCRIPT_LOADED':
+                        contentScriptReady = true;
+                        console.log('Content script loaded');
+                        return { success: true };
+
+                case 'bitcoin_requestAccounts':
+                        return await handleRequestAccounts();
+
+                // case 'requestAccounts':
+                //         return await handleRequestAccounts();
+
+                case 'bitcoin_signMessage':
+                case 'signMessage':
+                        return await handleSignMessage(request);
+
+                case 'bitcoin_createPsbt':
+                        return await handleCreatePSBT(request.params[0], request.params[1], request.params[2]);
+
+                // case 'createPSBT':
+                //         return await handleCreatePSBT(request);
+
+                case 'bitcoin_signPsbt':
+                case 'signPsbt':
+                        return await handleSignPsbt(request);
+
+                // case 'signPsbt':
+                //         return await handleSignPSBT(request);
+
+                case 'bitcoin_broadcastTransaction':
+                        return await handleBroadcastPSBT(request);
+
+                // case 'broadcastPSBT':
+                //         return await handleBroadcastPSBT(request);
+
                 case 'createWallet':
                         return await createWallet();
 
@@ -416,8 +522,15 @@ async function handleMessage(request) {
                 case 'decryptWallets':
                         return await handleDecryptWallets(request);
 
+                case 'bitcoin_getBalance':
                 case 'getBalance':
-                        return await getBalance(request.address);
+                        try {
+                                const address = request.params ? request.params[0] : request.address;
+                                const balanceData = await getBalance(address);
+                                return { success: true, balance: balanceData.balance };
+                        } catch (error) {
+                                return { success: false, error: error.message };
+                        }
 
                 case 'setSession':
                         setSession(request.wallets, request.currentWallet, request.password);
@@ -430,36 +543,57 @@ async function handleMessage(request) {
                         clearSession();
                         return { success: true };
 
-                case "FROM_PAGE_CHECK_CONNECTION":
-                        return { type: "FROM_EXTENSION", action: "CONNECTION_STATUS", connected: true };
-
-                case "FROM_PAGE_GET_CURRENT_ADDRESS":
-                        return await getCurrentAddress();
-
-                case "FROM_PAGE_SIGN_MESSAGE":
+                case 'signMessage':
                         return await handleSignMessage(request);
 
-                case 'createPSBT':
-                case "FROM_PAGE_CREATE_PSBT":
-                        return await handleCreatePSBT(request);
+                case 'signPsbt':
+                        return await handleSignPsbt(request);
 
-                case "FROM_PAGE_SIGN_PSBT":
-                        return await handleSignPSBT(request);
+                // case "FROM_PAGE_CHECK_CONNECTION":
+                //         return { type: "FROM_EXTENSION", action: "CONNECTION_STATUS", connected: true };
 
-                case "FROM_PAGE_BROADCAST_PSBT":
-                        return await handleBroadcastPSBT(request);
+                // case "FROM_PAGE_GET_CURRENT_ADDRESS":
+                //         return await getCurrentAddress();
 
-                case "FROM_PAGE_REJECT_PSBT":
-                        return handleRejectPSBT(request);
+                // case "FROM_PAGE_SIGN_MESSAGE":
+                //         return await handleSignMessage(request);
 
-                case "FROM_PAGE_RESET_UTXO_STATE":
-                        resetUtxoState();
-                        await chrome.storage.local.remove('tempReservedUtxos');
-                        return { success: true, message: 'UTXO state reset' };
+                // case 'createPSBT':
+                // case "FROM_PAGE_CREATE_PSBT":
+                //         return await handleCreatePSBT(request);
+
+                // case "FROM_PAGE_SIGN_PSBT":
+                //         return await handleSignPSBT(request);
+
+                // case "FROM_PAGE_BROADCAST_PSBT":
+                //         return await handleBroadcastPSBT(request);
+
+                // case "FROM_PAGE_REJECT_PSBT":
+                case "bitcoin_rejectPsbt":
+                        return await handleRejectPSBT(request);
+
+                // case "FROM_PAGE_RESET_UTXO_STATE":
+                //         resetUtxoState();
+                //         await chrome.storage.local.remove('tempReservedUtxos');
+                //         return { success: true, message: 'UTXO state reset' };
 
                 default:
-                        throw new Error(`Unknown request type: ${request.type || request.action}`);
+                        throw new Error(`Unknown request type: ${request.method || request.type || request.action}`);
 
+        }
+}
+
+async function handleRequestAccounts() {
+        try {
+                const currentWallet = await getCurrentWallet();
+                if (currentWallet) {
+                        return { success: true, accounts: [currentWallet.address] };
+                } else {
+                        throw new Error('No wallet available');
+                }
+        } catch (error) {
+                console.error('Error in handleRequestAccounts:', error);
+                return { success: false, error: error.message };
         }
 }
 
