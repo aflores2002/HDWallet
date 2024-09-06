@@ -2,11 +2,20 @@
 import { generateMnemonic, walletFromSeedPhrase } from './wallet';
 import { signMessage, verifyMessage } from './MessageSigning';
 import { createPsbt, signPsbt, broadcastTransaction, rejectPsbt, resetUtxoState } from './PsbtService.js';
+import { generateTransferPsbt } from './psbtGenerator';
+import { getMinFee } from './utils/fee';
 import CryptoJS from 'crypto-js';
 import { derivePublicKey } from './utils/cryptoUtils';
+import { getPaymentUtxos } from './PsbtService';
 import { Buffer } from 'buffer';
 import crypto from 'crypto-browserify';
 import * as bitcoin from 'bitcoinjs-lib';
+import * as ecc from 'tiny-secp256k1';
+import { ECPairFactory } from 'ecpair';
+
+bitcoin.initEccLib(ecc);
+
+const ECPair = ECPairFactory(ecc);
 
 let contentScriptReady = false;
 
@@ -46,21 +55,47 @@ async function createWallet() {
 }
 
 // Function to get balance
-async function getBalance(address) {
-        console.log('getBalance called for address:', address);
-        try {
-                const response = await fetch(`https://api.blockcypher.com/v1/btc/test3/addrs/${address}/balance`);
-                if (!response.ok) {
-                        throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                const data = await response.json();
-                console.log('Balance data received:', data);
-                const balanceInBTC = data.balance / 100000000; // Convert satoshis to BTC
-                return { success: true, balance: balanceInBTC };
-        } catch (error) {
-                console.error('Error fetching balance:', error);
-                return { success: false, error: error.message };
+const CACHE_DURATION = 60000; // 1 minute in milliseconds
+let balanceCache = {};
+
+async function getBalance(address, retries = 3, initialDelay = 1000) {
+        console.log(`getBalance called for address: ${address}`);
+
+        // Check cache first
+        if (balanceCache[address] && (Date.now() - balanceCache[address].timestamp) < CACHE_DURATION) {
+                console.log('Returning cached balance');
+                return balanceCache[address].data;
         }
+
+        let delay = initialDelay;
+        for (let i = 0; i < retries; i++) {
+                try {
+                        const response = await fetch(`https://blockstream.info/testnet/api/address/${address}`);
+                        if (!response.ok) {
+                                throw new Error(`HTTP error! status: ${response.status}`);
+                        }
+                        const data = await response.json();
+                        console.log('Balance data received:', data);
+                        const balanceInBTC = (data.chain_stats.funded_txo_sum - data.chain_stats.spent_txo_sum) / 100000000; // Convert satoshis to BTC
+                        const result = { success: true, balance: balanceInBTC };
+
+                        // Cache the result
+                        balanceCache[address] = {
+                                data: result,
+                                timestamp: Date.now()
+                        };
+
+                        return result;
+                } catch (error) {
+                        console.error(`Error fetching balance (attempt ${i + 1}/${retries}):`, error);
+                        if (i === retries - 1) {
+                                return { success: false, error: error.message };
+                        }
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        delay *= 2; // Exponential backoff
+                }
+        }
+        return { success: false, error: 'Max retries reached' };
 }
 
 async function handleGetBalance(address) {
@@ -532,6 +567,18 @@ async function handleMessage(request) {
                                 return { success: false, error: error.message };
                         }
 
+                case 'derivePublicKey':
+                        return await handleDerivePublicKey(request.params[0]);
+
+                case 'getPaymentUtxos':
+                        return await handleGetPaymentUtxos(request.params[0]);
+
+                case 'getWalletProvider':
+                        return await handleGetWalletProvider();
+
+                case 'generateTransferPsbt':
+                        return await handleGenerateTransferPsbt(request.params);
+
                 case 'setSession':
                         setSession(request.wallets, request.currentWallet, request.password);
                         return { success: true };
@@ -596,6 +643,109 @@ async function handleRequestAccounts() {
                 return { success: false, error: error.message };
         }
 }
+
+async function getWalletProvider() {
+        // This should return the name of the current wallet provider
+        // You might store this information when the wallet is connected
+        return 'test'; // or whatever the current provider is
+}
+
+// Message handler
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+        handleMessage(request)
+                .then(response => {
+                        console.log('Sending response:', response);
+                        sendResponse(response);
+                })
+                .catch(error => {
+                        console.error('Error handling message:', error);
+                        sendResponse({ success: false, error: error.message });
+                });
+        return true;  // Indicates that the response is sent asynchronously
+});
+
+async function handleDerivePublicKey(address) {
+        const currentWallet = await getCurrentWallet();
+        if (!currentWallet || !currentWallet.wif) {
+                throw new Error('No wallet available or WIF not found');
+        }
+        return derivePublicKey(currentWallet.wif);
+}
+
+async function handleGetPaymentUtxos(address) {
+        return await getPaymentUtxos(address);
+}
+
+async function handleGetWalletProvider() {
+        // Implement this based on how you're storing the wallet provider information
+        return 'leather'; // or whatever the current provider is
+}
+
+async function handleGenerateTransferPsbt(params) {
+        console.log('Handling generateTransferPsbt with params:', params);
+        try {
+                const { amount, toAddress, type, user, isCustodial } = params[0];
+                console.log('Parsed params:', { amount, toAddress, type, user, isCustodial });
+
+                if (!amount || !toAddress || !type || !user) {
+                        throw new Error('Missing required parameters for PSBT generation');
+                }
+
+                console.log('User object:', user);
+                console.log('Payment UTXOs:', user.paymentUtxos);
+
+                if (!Array.isArray(user.paymentUtxos) || user.paymentUtxos.length === 0) {
+                        throw new Error('No UTXOs available for payment');
+                }
+
+                const feeRate = await getMinFee();
+                console.log('Fee rate:', feeRate);
+
+                // Ensure the public key is in the correct format
+                let publicKey = user.paymentPublicKey;
+                console.log('Original Public Key:', publicKey);
+
+                // Find the start of the actual public key (looking for '02' or '03' prefix)
+                const keyStart = publicKey.search(/0[23]/);
+                if (keyStart === -1) {
+                        throw new Error('Could not find valid public key prefix');
+                }
+
+                // Extract the actual public key (66 characters starting from the found prefix)
+                publicKey = publicKey.substr(keyStart, 66);
+
+                // Remove any non-hex characters
+                publicKey = publicKey.replace(/[^0-9a-fA-F]/g, '');
+
+                console.log('Processed Public Key:', publicKey);
+                console.log('Processed Public Key Length:', publicKey.length);
+
+                // Check if the public key starts with '02' or '03' (compressed public key prefix)
+                if (!publicKey.startsWith('02') && !publicKey.startsWith('03')) {
+                        throw new Error(`Invalid public key prefix: ${publicKey.substring(0, 2)}`);
+                }
+
+                // Ensure the public key is 33 bytes (66 characters in hex)
+                if (publicKey.length !== 66) {
+                        throw new Error(`Invalid public key length: ${publicKey.length}. Expected 66 characters.`);
+                }
+
+                console.log('Final Public Key:', publicKey);
+                console.log('Final Public Key Length:', publicKey.length);
+
+                console.log('Calling generateTransferPsbt...');
+                const result = await generateTransferPsbt(amount, toAddress, feeRate, type, {
+                        ...user,
+                        paymentPublicKey: publicKey
+                }, isCustodial);
+                console.log('PSBT generation result:', result);
+                return { success: true, ...result };
+        } catch (error) {
+                console.error('Error in handleGenerateTransferPsbt:', error);
+                return { success: false, error: error.message };
+        }
+}
+
 
 // Keep the background script alive
 chrome.runtime.onInstalled.addListener(() => {

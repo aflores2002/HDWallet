@@ -20,7 +20,10 @@ export async function getPaymentUtxos(address, retries = 3) {
                         console.log('Raw UTXO data:', utxos);
                         const availableUtxos = utxos.filter(utxo =>
                                 utxo.status.confirmed && !reservedUtxos.has(`${utxo.txid}:${utxo.vout}`)
-                        );
+                        ).map(utxo => ({
+                                ...utxo,
+                                satoshis: Math.floor(Number(utxo.value))  // Ensure satoshis is an integer
+                        }));
                         console.log('Available UTXOs:', availableUtxos);
                         return availableUtxos;
                 } catch (error) {

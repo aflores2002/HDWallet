@@ -12,7 +12,8 @@
   ],
   "host_permissions": [
     "http://localhost:8000/*",
-    "https://api.blockcypher.com/"
+    "https://api.blockcypher.com/",
+    "https://mempool.space/"
   ],
   "content_scripts": [
     {

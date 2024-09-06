@@ -81,8 +81,10 @@ module.exports = {
                         "vm": require.resolve("vm-browserify")
                 },
                 alias: {
+                        '@': path.resolve(__dirname, 'src/'),
                         process: "process/browser"
-                }
+                },
+                extensions: ['.js', '.jsx', '.json'],
         },
         experiments: {
                 asyncWebAssembly: true,
