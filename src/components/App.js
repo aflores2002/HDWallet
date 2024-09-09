@@ -1,5 +1,5 @@
 // src/components/App.js
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import CreateWallet from './CreateWallet';
 import HomePage from './HomePage';
 import Login from './Login';
@@ -8,46 +8,65 @@ import SendBTC from './SendBTC';
 import ReceivePage from './ReceivePage';
 import '../styles.css';
 
-const setCurrentWallet = (wallet) => {
-        return new Promise((resolve, reject) => {
-                chrome.storage.local.set({ sessionCurrentWallet: wallet }, () => {
-                        if (chrome.runtime.lastError) {
-                                reject(new Error(chrome.runtime.lastError.message));
-                        } else {
-                                resolve();
-                        }
-                });
-        });
-};
-
-const getCurrentWallet = () => {
-        return new Promise((resolve, reject) => {
-                chrome.storage.local.get(['sessionCurrentWallet'], (result) => {
-                        if (result.sessionCurrentWallet) {
-                                resolve(result.sessionCurrentWallet);
-                        } else {
-                                reject(new Error("No current wallet available"));
-                        }
-                });
-        });
-};
+import { ChatManager, ChatInterface } from '../chatbot';
 
 const App = () => {
+        console.log('App function called');
+        const isMountedRef = useRef(true);
+
+        const [bitcoinPrice, setBitcoinPrice] = useState(0);
         const [wallets, setWallets] = useState([]);
         const [currentWallet, setCurrentWallet] = useState(null);
         const [view, setView] = useState('login');
         const [newWallet, setNewWallet] = useState(null);
         const [currentPassword, setCurrentPassword] = useState('');
         const [isLoading, setIsLoading] = useState(true);
+        const [error, setError] = useState(null);
+        const [isChatLoading, setIsChatLoading] = useState(true);
 
-        useEffect(() => {
-                checkSession();
+        const [chatManager] = useState(() => new ChatManager());
+
+        const setCurrentWalletInStorage = useCallback((wallet) => {
+                return new Promise((resolve, reject) => {
+                        chrome.storage.local.set({ sessionCurrentWallet: wallet }, () => {
+                                if (chrome.runtime.lastError) {
+                                        reject(new Error(chrome.runtime.lastError.message));
+                                } else {
+                                        resolve();
+                                }
+                        });
+                });
         }, []);
 
-        const checkSession = async () => {
-                setIsLoading(true);
+        const getCurrentWalletFromStorage = useCallback(() => {
+                return new Promise((resolve, reject) => {
+                        chrome.storage.local.get(['sessionCurrentWallet'], (result) => {
+                                if (result.sessionCurrentWallet) {
+                                        resolve(result.sessionCurrentWallet);
+                                } else {
+                                        reject(new Error("No current wallet available"));
+                                }
+                        });
+                });
+        }, []);
+
+        const fetchBitcoinPrice = useCallback(async () => {
                 try {
-                        const storedWallet = await getCurrentWallet();
+                        console.log('Fetching Bitcoin price...');
+                        const response = await fetch('https://api.coindesk.com/v1/bpi/currentprice.json');
+                        const data = await response.json();
+                        setBitcoinPrice(data.bpi.USD.rate_float);
+                        console.log('Bitcoin price fetched successfully');
+                } catch (error) {
+                        console.error('Error fetching Bitcoin price:', error);
+                        setError('Failed to fetch Bitcoin price: ' + error.message);
+                }
+        }, []);
+
+        const checkSession = useCallback(async () => {
+                console.log('Checking session...');
+                try {
+                        const storedWallet = await getCurrentWalletFromStorage();
                         if (storedWallet) {
                                 setCurrentWallet(storedWallet);
                                 setView('home');
@@ -55,14 +74,55 @@ const App = () => {
                 } catch (error) {
                         console.error('No stored wallet found:', error);
                 }
-                chrome.runtime.sendMessage({ action: 'getSession' }, (response) => {
-                        if (response && response.success) {
-                                setWallets(response.wallets || []);
-                                setCurrentPassword(response.password || '');
-                        }
-                        setIsLoading(false);
+                return new Promise((resolve) => {
+                        chrome.runtime.sendMessage({ action: 'getSession' }, (response) => {
+                                console.log('Session response:', response);
+                                if (response && response.success) {
+                                        setWallets(response.wallets || []);
+                                        setCurrentPassword(response.password || '');
+                                        if (response.currentWallet) {
+                                                setCurrentWallet(response.currentWallet);
+                                                setView('home');
+                                        }
+                                }
+                                resolve();
+                        });
                 });
-        };
+        }, [getCurrentWalletFromStorage]);
+
+        useEffect(() => {
+                console.log('App useEffect triggered');
+
+                const initializeApp = async () => {
+                        console.log('Initializing app...');
+                        if (!isMountedRef.current) return;
+                        setIsLoading(true);
+                        setError(null);
+                        try {
+                                await checkSession();
+                                await fetchBitcoinPrice();
+                                await chatManager.loadMessages();
+                                console.log('App initialized successfully');
+                        } catch (err) {
+                                console.error('Error initializing app:', err);
+                                if (isMountedRef.current) setError('Failed to initialize app: ' + err.message);
+                        } finally {
+                                if (isMountedRef.current) {
+                                        setIsLoading(false);
+                                        setIsChatLoading(false);
+                                }
+                        }
+                };
+
+                initializeApp();
+
+                const interval = setInterval(fetchBitcoinPrice, 60000); // every minute
+                return () => {
+                        console.log('App cleanup function called');
+                        isMountedRef.current = false;
+                        clearInterval(interval);
+                };
+        }, [fetchBitcoinPrice, chatManager, checkSession]);
 
         const handleCreateWallet = () => {
                 chrome.runtime.sendMessage({ action: 'createWallet' }, (response) => {
@@ -203,8 +263,16 @@ const App = () => {
                 });
         };
 
-        if (isLoading) {
-                return <div>Loading...</div>;
+        console.log('Rendering App component');
+        console.log('Current view:', view);
+        console.log('Current wallet:', currentWallet);
+
+        // if (isLoading) {
+        //         return <div>Loading wallet...</div>;
+        // }
+
+        if (error) {
+                return <div>Error: {error}</div>;
         }
 
         return (
@@ -238,6 +306,7 @@ const App = () => {
                                 {view === 'login' && <Login onLogin={handleLogin} onCreateWallet={handleCreateWallet} />}
                                 {view === 'send' && currentWallet && <SendBTC wallet={currentWallet} onReturn={() => setView('home')} />}
                                 {view === 'receive' && currentWallet && <ReceivePage wallet={currentWallet} onReturn={() => setView('home')} />}
+                                {<ChatInterface chatManager={chatManager} />}
                         </main>
                         <footer className="footer">
                                 <p>&copy; 2024 HD Wallet</p>

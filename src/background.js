@@ -19,6 +19,29 @@ const ECPair = ECPairFactory(ecc);
 
 let contentScriptReady = false;
 
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+        console.log('Background script received message:', request);
+
+        if (request.action === 'triggerRerender') {
+                console.log('Triggering rerender');
+                chrome.runtime.sendMessage({ action: 'rerender' });
+                return true;
+        }
+
+        // Handle the message
+        handleMessage(request)
+                .then(response => {
+                        console.log('Sending response:', response);
+                        sendResponse(response);
+                })
+                .catch(error => {
+                        console.error('Error handling message:', error);
+                        sendResponse({ success: false, error: error.message });
+                });
+
+        return true; // Indicates that the response is sent asynchronously
+});
+
 // Listen for content script loaded message
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         if (message.type === 'CONTENT_SCRIPT_LOADED') {
@@ -514,6 +537,11 @@ async function handleMessage(request) {
         console.log('Handling message:', request);
 
         switch (request.method || request.type || request.action) {
+                case 'triggerRerender':
+                        console.log('Triggering rerender');
+                        chrome.runtime.sendMessage({ action: 'rerender' });
+                        return { success: true };
+
                 case 'CONTENT_SCRIPT_LOADED':
                         contentScriptReady = true;
                         console.log('Content script loaded');
@@ -757,3 +785,25 @@ chrome.alarms.onAlarm.addListener((alarm) => {
                 extendSession();
         }
 });
+
+// Export any functions or variables that need to be accessed from other parts of your extension
+export {
+        handleMessage,
+        handleRequestAccounts,
+        handleSignMessage,
+        handleCreatePSBT,
+        handleSignPsbt,
+        handleBroadcastPSBT,
+        createWallet,
+        handleEncryptWallet,
+        handleDecryptWallets,
+        handleGetBalance,
+        handleDerivePublicKey,
+        handleGetPaymentUtxos,
+        handleGetWalletProvider,
+        handleGenerateTransferPsbt,
+        setSession,
+        handleGetSession,
+        clearSession,
+        handleRejectPSBT
+};

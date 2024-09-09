@@ -2,12 +2,43 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import App from './components/App';
+import ErrorBoundary from './components/ErrorBoundary';
 
-const container = document.getElementById('root');
-const root = createRoot(container);
+let root = null;
 
-root.render(
-        <React.StrictMode>
-                <App />
-        </React.StrictMode>
-);
+const renderApp = () => {
+        console.log('Rendering app...');
+        const container = document.getElementById('root');
+        if (container) {
+                if (!root) {
+                        root = createRoot(container);
+                }
+                root.render(
+                        <React.StrictMode>
+                                <ErrorBoundary>
+                                        <App key={Date.now()} />
+                                </ErrorBoundary>
+                        </React.StrictMode>
+                );
+        } else {
+                console.error('Root element not found');
+        }
+};
+
+chrome.runtime.onMessage.addListener((message) => {
+        if (message.action === 'rerender') {
+                console.log('Rerender message received');
+                renderApp();
+        }
+});
+
+// Initial render
+renderApp();
+
+// Handle popup closing
+window.addEventListener('unload', () => {
+        if (root) {
+                root.unmount();
+                root = null;
+        }
+});
