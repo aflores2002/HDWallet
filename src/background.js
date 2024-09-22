@@ -13,42 +13,16 @@ import * as bitcoin from 'bitcoinjs-lib';
 import * as ecc from 'tiny-secp256k1';
 import { ECPairFactory } from 'ecpair';
 
+import { sendBitcoinFromChat } from './services/bitcoinService';
+
+let lastMessageTimestamp = 0;
+const MESSAGE_DEBOUNCE_TIME = 50; // milliseconds
+
 bitcoin.initEccLib(ecc);
 
 const ECPair = ECPairFactory(ecc);
 
 let contentScriptReady = false;
-
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-        console.log('Background script received message:', request);
-
-        if (request.action === 'triggerRerender') {
-                console.log('Triggering rerender');
-                chrome.runtime.sendMessage({ action: 'rerender' });
-                return true;
-        }
-
-        // Handle the message
-        handleMessage(request)
-                .then(response => {
-                        console.log('Sending response:', response);
-                        sendResponse(response);
-                })
-                .catch(error => {
-                        console.error('Error handling message:', error);
-                        sendResponse({ success: false, error: error.message });
-                });
-
-        return true; // Indicates that the response is sent asynchronously
-});
-
-// Listen for content script loaded message
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-        if (message.type === 'CONTENT_SCRIPT_LOADED') {
-                console.log('Content script loaded in tab:', sender.tab.id);
-                contentScriptReady = true;
-        }
-});
 
 // manage session timeout
 let sessionTimeout = null;
@@ -122,8 +96,10 @@ async function getBalance(address, retries = 3, initialDelay = 1000) {
 }
 
 async function handleGetBalance(address) {
+        console.log('handleGetBalance called for address:', address);
         try {
                 const balance = await getBalance(address);
+                console.log('Balance retrieved:', balance);
                 return balance;
         } catch (error) {
                 console.error('Error in handleGetBalance:', error);
@@ -231,31 +207,6 @@ function extendSession() {
                 }
         });
 }
-
-// Add this message listener in your background script
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-        if (request.contentScriptQuery == "fetchBalance") {
-                fetch(request.url)
-                        .then(response => response.json())
-                        .then(data => sendResponse(data))
-                        .catch(error => sendResponse({ error: error.toString() }));
-                return true;  // Will respond asynchronously
-        }
-});
-
-// Message handler
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-        handleMessage(request, sender)
-                .then(response => {
-                        console.log('Sending response:', response);
-                        sendResponse(response);
-                })
-                .catch(error => {
-                        console.error('Error handling message:', error);
-                        sendResponse({ success: false, error: error.message });
-                });
-        return true;  // Indicates that the response is sent asynchronously
-});
 
 // Function to get the current wallet
 function getCurrentWallet() {
@@ -442,8 +393,15 @@ async function handleDecryptWallets(request) {
 }
 
 async function handleGetSession() {
+        console.log('handleGetSession called');
         return new Promise((resolve) => {
                 chrome.storage.local.get(['sessionWallets', 'sessionCurrentWallet', 'sessionPassword'], (result) => {
+                        console.log('Session data retrieved:', {
+                                hasWallets: !!result.sessionWallets,
+                                walletsCount: result.sessionWallets ? result.sessionWallets.length : 0,
+                                hasCurrentWallet: !!result.sessionCurrentWallet,
+                                hasPassword: !!result.sessionPassword
+                        });
                         if (result.sessionWallets && result.sessionCurrentWallet && result.sessionPassword) {
                                 extendSession();
                                 resolve({
@@ -453,6 +411,7 @@ async function handleGetSession() {
                                         password: result.sessionPassword
                                 });
                         } else {
+                                console.log('No active session found');
                                 resolve({ success: false });
                         }
                 });
@@ -535,126 +494,95 @@ async function showConfirmationDialog(request) {
 
 async function handleMessage(request) {
         console.log('Handling message:', request);
+        try {
+                switch (request.method || request.type || request.action) {
+                        case 'triggerRerender':
+                                console.log('Triggering rerender');
+                                chrome.runtime.sendMessage({ action: 'rerender' });
+                                return { success: true };
 
-        switch (request.method || request.type || request.action) {
-                case 'triggerRerender':
-                        console.log('Triggering rerender');
-                        chrome.runtime.sendMessage({ action: 'rerender' });
-                        return { success: true };
+                        case 'CONTENT_SCRIPT_LOADED':
+                                contentScriptReady = true;
+                                console.log('Content script loaded');
+                                return { success: true };
 
-                case 'CONTENT_SCRIPT_LOADED':
-                        contentScriptReady = true;
-                        console.log('Content script loaded');
-                        return { success: true };
+                        case 'sendBitcoin':
+                                try {
+                                        const { toAddress, amount, feeRate } = request;
+                                        console.log('Sending Bitcoin:', { toAddress, amount, feeRate });
+                                        const result = await sendBitcoinFromChat(toAddress, amount, feeRate);
+                                        console.log('sendBitcoinFromChat result:', result);
+                                        return result;
+                                } catch (error) {
+                                        console.error('Error sending Bitcoin:', error);
+                                        return { success: false, error: error.message || 'Unknown error occurred' };
+                                }
 
-                case 'bitcoin_requestAccounts':
-                        return await handleRequestAccounts();
+                        case 'bitcoin_requestAccounts':
+                        case 'requestAccounts':
+                                return await handleRequestAccounts();
 
-                // case 'requestAccounts':
-                //         return await handleRequestAccounts();
+                        case 'bitcoin_signMessage':
+                        case 'signMessage':
+                                return await handleSignMessage(request);
 
-                case 'bitcoin_signMessage':
-                case 'signMessage':
-                        return await handleSignMessage(request);
+                        case 'bitcoin_createPsbt':
+                                return await handleCreatePSBT(request.params[0], request.params[1], request.params[2]);
 
-                case 'bitcoin_createPsbt':
-                        return await handleCreatePSBT(request.params[0], request.params[1], request.params[2]);
+                        case 'bitcoin_signPsbt':
+                        case 'signPsbt':
+                                return await handleSignPsbt(request);
 
-                // case 'createPSBT':
-                //         return await handleCreatePSBT(request);
+                        case 'bitcoin_broadcastTransaction':
+                                return await handleBroadcastPSBT(request);
 
-                case 'bitcoin_signPsbt':
-                case 'signPsbt':
-                        return await handleSignPsbt(request);
+                        case 'createWallet':
+                                return await createWallet();
 
-                // case 'signPsbt':
-                //         return await handleSignPSBT(request);
+                        case 'encryptWallet':
+                                return await handleEncryptWallet(request);
 
-                case 'bitcoin_broadcastTransaction':
-                        return await handleBroadcastPSBT(request);
+                        case 'decryptWallets':
+                                return await handleDecryptWallets(request);
 
-                // case 'broadcastPSBT':
-                //         return await handleBroadcastPSBT(request);
-
-                case 'createWallet':
-                        return await createWallet();
-
-                case 'encryptWallet':
-                        return await handleEncryptWallet(request);
-
-                case 'decryptWallets':
-                        return await handleDecryptWallets(request);
-
-                case 'bitcoin_getBalance':
-                case 'getBalance':
-                        try {
+                        case 'bitcoin_getBalance':
+                        case 'getBalance':
                                 const address = request.params ? request.params[0] : request.address;
-                                const balanceData = await getBalance(address);
-                                return { success: true, balance: balanceData.balance };
-                        } catch (error) {
-                                return { success: false, error: error.message };
-                        }
+                                return await handleGetBalance(address);
 
-                case 'derivePublicKey':
-                        return await handleDerivePublicKey(request.params[0]);
+                        case 'derivePublicKey':
+                                return await handleDerivePublicKey(request.params[0]);
 
-                case 'getPaymentUtxos':
-                        return await handleGetPaymentUtxos(request.params[0]);
+                        case 'getPaymentUtxos':
+                                return await handleGetPaymentUtxos(request.params[0]);
 
-                case 'getWalletProvider':
-                        return await handleGetWalletProvider();
+                        case 'getWalletProvider':
+                                return await handleGetWalletProvider();
 
-                case 'generateTransferPsbt':
-                        return await handleGenerateTransferPsbt(request.params);
+                        case 'generateTransferPsbt':
+                                return await handleGenerateTransferPsbt(request.params);
 
-                case 'setSession':
-                        setSession(request.wallets, request.currentWallet, request.password);
-                        return { success: true };
+                        case 'setSession':
+                                setSession(request.wallets, request.currentWallet, request.password);
+                                return { success: true };
 
-                case 'getSession':
-                        return await handleGetSession();
+                        case 'getSession':
+                                return await handleGetSession();
 
-                case 'clearSession':
-                        clearSession();
-                        return { success: true };
+                        case 'clearSession':
+                                clearSession();
+                                return { success: true };
 
-                case 'signMessage':
-                        return await handleSignMessage(request);
+                        case "bitcoin_rejectPsbt":
+                                return await handleRejectPSBT(request);
 
-                case 'signPsbt':
-                        return await handleSignPsbt(request);
-
-                // case "FROM_PAGE_CHECK_CONNECTION":
-                //         return { type: "FROM_EXTENSION", action: "CONNECTION_STATUS", connected: true };
-
-                // case "FROM_PAGE_GET_CURRENT_ADDRESS":
-                //         return await getCurrentAddress();
-
-                // case "FROM_PAGE_SIGN_MESSAGE":
-                //         return await handleSignMessage(request);
-
-                // case 'createPSBT':
-                // case "FROM_PAGE_CREATE_PSBT":
-                //         return await handleCreatePSBT(request);
-
-                // case "FROM_PAGE_SIGN_PSBT":
-                //         return await handleSignPSBT(request);
-
-                // case "FROM_PAGE_BROADCAST_PSBT":
-                //         return await handleBroadcastPSBT(request);
-
-                // case "FROM_PAGE_REJECT_PSBT":
-                case "bitcoin_rejectPsbt":
-                        return await handleRejectPSBT(request);
-
-                // case "FROM_PAGE_RESET_UTXO_STATE":
-                //         resetUtxoState();
-                //         await chrome.storage.local.remove('tempReservedUtxos');
-                //         return { success: true, message: 'UTXO state reset' };
-
-                default:
-                        throw new Error(`Unknown request type: ${request.method || request.type || request.action}`);
-
+                        default:
+                                console.warn(`Unknown request type: ${request.method || request.type || request.action}`);
+                                return { success: false, error: `Unknown request type: ${request.method || request.type || request.action}` };
+                }
+        } catch (error) {
+                console.error('Unexpected error in handleMessage:', error);
+                return { success: false, error: 'An unexpected error occurred' };
         }
 }
 
@@ -678,18 +606,38 @@ async function getWalletProvider() {
         return 'test'; // or whatever the current provider is
 }
 
-// Message handler
+// Main message listener
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+        console.log('Received message:', request);
+
+        // Handle CONTENT_SCRIPT_LOADED separately and immediately
+        if (request.type === 'CONTENT_SCRIPT_LOADED') {
+                console.log('Content script loaded in tab:', sender.tab.id);
+                contentScriptReady = true;
+                sendResponse({ success: true });
+                return true;
+        }
+
+        // For other messages, use a less strict debouncing
+        const now = Date.now();
+        if (now - lastMessageTimestamp < MESSAGE_DEBOUNCE_TIME) {
+                // Instead of debouncing, we'll just log and continue processing
+                console.log('Rapid message:', request);
+        }
+        lastMessageTimestamp = now;
+
+        // Process the message
         handleMessage(request)
                 .then(response => {
                         console.log('Sending response:', response);
-                        sendResponse(response);
+                        sendResponse(response || { success: false, error: 'No response from handler' });
                 })
                 .catch(error => {
                         console.error('Error handling message:', error);
                         sendResponse({ success: false, error: error.message });
                 });
-        return true;  // Indicates that the response is sent asynchronously
+
+        return true; // Indicates that the response is sent asynchronously
 });
 
 async function handleDerivePublicKey(address) {

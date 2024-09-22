@@ -144,12 +144,13 @@ body {
     }
 
     /* Chat Bot Styles */
+
     .chat-container {
       display: flex;
-      justify-content: center; /* Horizontally centered */
-      align-items: flex-start; /* Aligns chat box at the top */
-      height: 90vh; /* Adjusted to make space only 10% above and below */
-      padding-top: 20px; /* Adds a small space at the top */
+      justify-content: center;
+      align-items: flex-start;
+      height: 90vh;
+      padding-top: 20px;
       background-color: #f4f7f6;
     }
 
@@ -161,7 +162,7 @@ body {
       overflow: hidden;
       display: flex;
       flex-direction: column;
-      margin-bottom: 20px; /* Adds a small space at the bottom */
+      margin-bottom: 20px;
     }
 
     .chat-messages {
@@ -239,4 +240,85 @@ body {
       font-size: 16px;
       color: #666;
       padding: 50px;
+    }
+
+
+
+    .mock-response {
+      background-color: #fff3cd;
+      border: 1px solid #ffeeba;
+    }
+
+    .mock-label {
+        display: block;
+        font-size: 0.8em;
+        color: #856404;
+        margin-top: 5px;
+    }
+
+    .error-message, .retry-message {
+        padding: 10px;
+        margin: 10px 0;
+        border-radius: 5px;
+        text-align: center;
+    }
+
+    .error-message {
+        background-color: #f8d7da;
+        border: 1px solid #f5c6cb;
+        color: #721c24;
+    }
+
+    .retry-message {
+        background-color: #fff3cd;
+        border: 1px solid #ffeeba;
+        color: #856404;
+        padding: 10px;
+        margin: 10px 0;
+        border-radius: 5px;
+        text-align: center;
+    }
+
+    .message pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        font-family: inherit;
+        margin: 0;
+    }
+
+    .fallback {
+      background-color: #f8f9fa;
+      border: 1px solid #e9ecef;
+    }
+
+    .fallback-label {
+        font-size: 0.8em;
+        color: #6c757d;
+        font-style: italic;
+        display: block;
+        margin-top: 5px;
+    }
+
+    .fallback-message {
+        background-color: #e2e3e5;
+        border: 1px solid #d6d8db;
+        color: #383d41;
+        padding: 10px;
+        margin: 10px 0;
+        border-radius: 5px;
+        text-align: center;
+    }
+
+    .transaction-result {
+        margin-top: 10px;
+        padding: 5px;
+        border-radius: 5px;
+    }
+
+    .transaction-result .success {
+        color: #28a745;
+    }
+
+    .transaction-result .error {
+        color: #dc3545;
     }

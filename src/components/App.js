@@ -9,6 +9,7 @@ import ReceivePage from './ReceivePage';
 import '../styles.css';
 
 import { ChatManager, ChatInterface } from '../chatbot';
+import APIKeyInput from './APIKeyInput';
 
 const App = () => {
         console.log('App function called');
@@ -22,9 +23,63 @@ const App = () => {
         const [currentPassword, setCurrentPassword] = useState('');
         const [isLoading, setIsLoading] = useState(true);
         const [error, setError] = useState(null);
-        const [isChatLoading, setIsChatLoading] = useState(true);
 
-        const [chatManager] = useState(() => new ChatManager());
+        const [isChatLoading, setIsChatLoading] = useState(true);
+        const [chatManager, setChatManager] = useState(null);
+
+        const getBalance = useCallback(async () => {
+                console.log('getBalance function called');
+                console.log('Current wallet:', currentWallet);
+                if (currentWallet && currentWallet.address) {
+                        console.log(`Fetching balance for address: ${currentWallet.address}`);
+                        return new Promise((resolve, reject) => {
+                                chrome.runtime.sendMessage({ action: 'getBalance', address: currentWallet.address }, (response) => {
+                                        console.log('Balance fetch response:', response);
+                                        if (chrome.runtime.lastError) {
+                                                console.error('Error fetching balance:', chrome.runtime.lastError);
+                                                reject(chrome.runtime.lastError);
+                                        } else if (response.success && typeof response.balance === 'number') {
+                                                const balanceInSatoshis = Math.floor(response.balance * 100000000);
+                                                console.log(`Balance fetched: ${balanceInSatoshis} satoshis`);
+                                                resolve(balanceInSatoshis);
+                                        } else {
+                                                console.error('Failed to fetch balance:', response.error || 'Unknown error');
+                                                reject(new Error(response.error || 'Failed to fetch balance'));
+                                        }
+                                });
+                        });
+                }
+                console.warn('No current wallet available for balance fetch');
+                return 0;
+        }, [currentWallet]);
+
+        const sendTransaction = useCallback(async (toAddress, amount, feeRate) => {
+                return new Promise((resolve, reject) => {
+                        chrome.runtime.sendMessage({
+                                action: 'sendBitcoin',
+                                toAddress: toAddress,
+                                amount: amount,
+                                feeRate: feeRate
+                        }, (response) => {
+                                if (chrome.runtime.lastError) {
+                                        reject(new Error(chrome.runtime.lastError.message));
+                                } else if (response.success) {
+                                        resolve({ success: true, txid: response.txid });
+                                } else {
+                                        resolve({ success: false, error: response.error });
+                                }
+                        });
+                });
+        }, []);
+
+        const initializeChatManager = useCallback((apiKey) => {
+                if (currentWallet) {
+                        console.log('Initializing ChatManager with current wallet:', currentWallet);
+                        setChatManager(new ChatManager(apiKey, getBalance, sendTransaction));
+                } else {
+                        console.warn('Cannot initialize ChatManager: No current wallet available');
+                }
+        }, [currentWallet, getBalance, sendTransaction]);
 
         const setCurrentWalletInStorage = useCallback((wallet) => {
                 return new Promise((resolve, reject) => {
@@ -92,7 +147,6 @@ const App = () => {
 
         useEffect(() => {
                 console.log('App useEffect triggered');
-
                 const initializeApp = async () => {
                         console.log('Initializing app...');
                         if (!isMountedRef.current) return;
@@ -101,7 +155,15 @@ const App = () => {
                         try {
                                 await checkSession();
                                 await fetchBitcoinPrice();
-                                await chatManager.loadMessages();
+                                if (currentWallet) {
+                                        chrome.storage.local.get(['openaiApiKey'], (result) => {
+                                                if (result.openaiApiKey) {
+                                                        initializeChatManager(result.openaiApiKey);
+                                                } else {
+                                                        console.log('No API key found. User needs to input one.');
+                                                }
+                                        });
+                                }
                                 console.log('App initialized successfully');
                         } catch (err) {
                                 console.error('Error initializing app:', err);
@@ -116,13 +178,14 @@ const App = () => {
 
                 initializeApp();
 
+
                 const interval = setInterval(fetchBitcoinPrice, 60000); // every minute
                 return () => {
                         console.log('App cleanup function called');
                         isMountedRef.current = false;
                         clearInterval(interval);
                 };
-        }, [fetchBitcoinPrice, chatManager, checkSession]);
+        }, [fetchBitcoinPrice, checkSession, initializeChatManager, currentWallet]);
 
         const handleCreateWallet = () => {
                 chrome.runtime.sendMessage({ action: 'createWallet' }, (response) => {
@@ -306,7 +369,8 @@ const App = () => {
                                 {view === 'login' && <Login onLogin={handleLogin} onCreateWallet={handleCreateWallet} />}
                                 {view === 'send' && currentWallet && <SendBTC wallet={currentWallet} onReturn={() => setView('home')} />}
                                 {view === 'receive' && currentWallet && <ReceivePage wallet={currentWallet} onReturn={() => setView('home')} />}
-                                {<ChatInterface chatManager={chatManager} />}
+                                {!chatManager && <APIKeyInput onSave={initializeChatManager} />}
+                                {chatManager && <ChatInterface chatManager={chatManager} />}
                         </main>
                         <footer className="footer">
                                 <p>&copy; 2024 HD Wallet</p>
