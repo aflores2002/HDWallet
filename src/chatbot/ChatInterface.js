@@ -21,21 +21,17 @@ const ChatInterface = ({ chatManager }) => {
                 if (input.trim()) {
                         setIsLoading(true);
                         setError(null);
-                        setIsFallback(false);
                         const userMessage = { text: input, sender: 'user' };
                         await chatManager.addMessage(userMessage);
                         setMessages([...chatManager.getMessages()]);
                         setInput('');
 
                         try {
-                                const response = await chatManager.generateBotResponse(input);
-                                const parsedResponse = JSON.parse(response);
-                                setIsFallback(parsedResponse.isFallbackResponse || false);
+                                const botResponse = await chatManager.generateBotResponse(input);
                                 const botMessage = {
-                                        text: response,
+                                        text: botResponse,
                                         sender: 'bot',
-                                        isFallback: parsedResponse.isFallbackResponse || false,
-                                        transactionResult: parsedResponse.transactionResult
+                                        isFallbackResponse: botResponse.includes('Transaction successful') || botResponse.includes('Transaction failed')
                                 };
                                 await chatManager.addMessage(botMessage);
                                 setMessages([...chatManager.getMessages()]);
@@ -53,27 +49,13 @@ const ChatInterface = ({ chatManager }) => {
                         <div className="chat-box">
                                 <div className="chat-messages">
                                         {messages.map((msg, index) => (
-                                                <div key={index} className={`message ${msg.sender} ${msg.isFallback ? 'fallback' : ''}`}>
+                                                <div key={index} className={`message ${msg.sender} ${msg.isFallbackResponse ? 'fallback-response' : ''}`}>
                                                         <pre>{msg.text}</pre>
-                                                        {msg.isFallback && <span className="fallback-label">Fallback Response</span>}
-                                                        {msg.transactionResult && (
-                                                                <div className="transaction-result">
-                                                                        {msg.transactionResult.success ? (
-                                                                                <span className="success">Transaction successful! TXID: {msg.transactionResult.txid}</span>
-                                                                        ) : (
-                                                                                <span className="error">Transaction failed: {msg.transactionResult.error}</span>
-                                                                        )}
-                                                                </div>
-                                                        )}
+                                                        {msg.isFallbackResponse && <span className="fallback-label">Fallback Response</span>}
                                                 </div>
                                         ))}
-                                        {error && <div className="error-message">{error}</div>}
-                                        {isFallback && (
-                                                <div className="fallback-message">
-                                                        Using fallback response due to API unavailability.
-                                                </div>
-                                        )}
                                 </div>
+                                {error && <div className="error-message">{error}</div>}
                                 <form onSubmit={handleSubmit} className="chat-input-area">
                                         <input
                                                 type="text"

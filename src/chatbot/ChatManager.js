@@ -287,11 +287,27 @@ class ChatManager {
                         currentBalance: currentBalance,
                         error: error,
                         transactionResult: transactionResult,
-                        isFallbackResponse: true
                 };
 
+                // Remove null fields and isFallbackResponse
+                Object.keys(response).forEach(key => {
+                        if (response[key] === null) {
+                                delete response[key];
+                        }
+                });
+
+                let formattedResponse = JSON.stringify(response, null, 2);
+
+                // Add a human-readable message based on the transaction result
+                let humanReadableMessage = '';
+                if (transactionResult && transactionResult.success) {
+                        humanReadableMessage = `Transaction successful! TXID: ${transactionResult.txid}`;
+                } else if (error) {
+                        humanReadableMessage = `Transaction failed: ${error}`;
+                }
+
                 console.log('Generated fallback response:', response);
-                return JSON.stringify(response, null, 2);
+                return `${formattedResponse}\n\n${humanReadableMessage}`;
         }
 }
 
