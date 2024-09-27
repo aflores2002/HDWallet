@@ -1,9 +1,13 @@
 // src/PsbtService.js
 import * as bitcoin from 'bitcoinjs-lib';
 import axios from 'axios';
-import ECPairFactory from 'ecpair';
+import { ECPairFactory } from 'ecpair';
 import * as ecc from 'tiny-secp256k1';
 
+// Initialize the elliptic curve library
+bitcoin.initEccLib(ecc);
+
+// Initialize ECPair
 const ECPair = ECPairFactory(ecc);
 const network = bitcoin.networks.testnet; // Change to bitcoin.networks.bitcoin for mainnet
 
@@ -97,6 +101,8 @@ export async function createPsbt(senderAddress, recipientAddress, amountInSatosh
                 totalInput += utxo.value;
                 usedUtxos.push(utxo);
 
+                console.log('Added input:', input);
+
                 if (totalInput >= amountInSatoshis + (psbt.inputCount * 180 + 2 * 34 + 10) * feeRate) {
                         break;  // We have enough inputs
                 }
@@ -121,9 +127,12 @@ export async function createPsbt(senderAddress, recipientAddress, amountInSatosh
                 });
         }
 
+        console.log('PSBT inputs:', psbt.txInputs);
+        console.log('PSBT outputs:', psbt.txOutputs);
+
         reserveUtxos(usedUtxos);
         console.log('Created PSBT:', psbt.toHex());
-        return { psbtHex: psbt.toHex(), usedUtxos };
+        return { success: true, psbtHex: psbt.toHex(), usedUtxos };
 }
 
 async function fetchTransactionHex(txid) {
@@ -142,10 +151,12 @@ export function signPsbt(psbtHex, wif) {
         const keyPair = ECPair.fromWIF(wif, network);
 
         try {
-                for (let i = 0; i < psbt.inputCount; i++) {
+                for (let i = 0; i < psbt.data.inputs.length; i++) {
                         psbt.signInput(i, keyPair);
+                        console.log(`Input ${i} signed`);
                 }
 
+                console.log('All inputs signed');
                 console.log('Signed PSBT:', psbt.toHex());
                 return psbt.toHex();
         } catch (error) {
@@ -166,55 +177,28 @@ export function rejectPsbt(psbtHex) {
         console.log('PSBT rejected, UTXOs released');
 }
 
-export async function broadcastTransaction(psbtHex) {
+export async function broadcastTransaction(txHex) {
         try {
-                console.log('Attempting to broadcast transaction with PSBT:', psbtHex);
-                if (typeof psbtHex !== 'string' || psbtHex.trim() === '') {
-                        throw new Error('Invalid PSBT: expected non-empty hex string');
-                }
-                const psbt = bitcoin.Psbt.fromHex(psbtHex, { network });
-                console.log('PSBT parsed successfully');
-                console.log('PSBT before finalization:', psbt.toHex());
+                console.log('Attempting to broadcast transaction with hex:', txHex);
+                const response = await fetch(`https://mempool.space/testnet/api/tx`, {
+                        method: 'POST',
+                        body: txHex,
+                        headers: {
+                                'Content-Type': 'text/plain',
+                        },
+                });
 
-                const validator = (pubkey, msghash, signature) => ECPair.fromPublicKey(pubkey).verify(msghash, signature);
-
-                for (let i = 0; i < psbt.inputCount; i++) {
-                        try {
-                                console.log(`Validating and finalizing input ${i}`);
-                                psbt.validateSignaturesOfInput(i, validator);
-                                psbt.finalizeInput(i);
-                                console.log(`Input ${i} finalized successfully`);
-                        } catch (error) {
-                                console.error(`Error finalizing input ${i}:`, error);
-                                releaseUtxos(psbt.txInputs);
-                                throw new Error(`Failed to finalize input ${i}: ${error.message}`);
-                        }
+                if (!response.ok) {
+                        const errorText = await response.text();
+                        console.error('Broadcast failed. Status:', response.status, 'Error:', errorText);
+                        throw new Error(`Failed to broadcast transaction: ${response.status} ${response.statusText}. ${errorText}`);
                 }
 
-                const tx = psbt.extractTransaction();
-                const txHex = tx.toHex();
-                console.log('Finalized transaction hex:', txHex);
-
-                console.log('Sending transaction to mempool.space API');
-                const response = await axios.post('https://mempool.space/testnet/api/tx', txHex);
-                console.log('API response:', response.data);
-
-                releaseUtxos(psbt.data.inputs);  // Release UTXOs after successful broadcast
-                console.log('Transaction broadcast successfully. TXID:', response.data);
-                return { success: true, txid: response.data, message: 'Transaction broadcast successfully' };
+                const txid = await response.text();
+                console.log('Transaction broadcast successful. TXID:', txid);
+                return txid;
         } catch (error) {
                 console.error('Error broadcasting transaction:', error);
-                if (psbtHex) {
-                        try {
-                                const psbt = bitcoin.Psbt.fromHex(psbtHex, { network });
-                                releaseUtxos(psbt.data.inputs);  // Release UTXOs if broadcast fails
-                        } catch (innerError) {
-                                console.error('Error releasing UTXOs:', innerError);
-                        }
-                } return {
-                        success: false,
-                        error: error.response ? error.response.data : error.message,
-                        message: 'Failed to broadcast transaction'
-                };
+                throw error;
         }
 }

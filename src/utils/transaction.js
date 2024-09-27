@@ -1,8 +1,11 @@
 // src/utils/transaction.js
 import * as bitcoin from 'bitcoinjs-lib';
 import * as ecc from 'tiny-secp256k1';
-import ECPairFactory from 'ecpair';
+import { ECPairFactory } from 'ecpair';
 import { Buffer } from 'buffer';
+
+// Initialize the elliptic curve library
+bitcoin.initEccLib(ecc);
 
 const ECPair = ECPairFactory(ecc);
 const network = bitcoin.networks.testnet;

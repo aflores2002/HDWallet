@@ -28,38 +28,55 @@ const App = () => {
         const [chatManager, setChatManager] = useState(null);
 
         const getBalance = useCallback(async () => {
-                console.log('getBalance function called');
-                console.log('Current wallet:', currentWallet);
-                if (currentWallet && currentWallet.address) {
-                        console.log(`Fetching balance for address: ${currentWallet.address}`);
-                        return new Promise((resolve, reject) => {
-                                chrome.runtime.sendMessage({ action: 'getBalance', address: currentWallet.address }, (response) => {
-                                        console.log('Balance fetch response:', response);
-                                        if (chrome.runtime.lastError) {
-                                                console.error('Error fetching balance:', chrome.runtime.lastError);
-                                                reject(chrome.runtime.lastError);
-                                        } else if (response.success && typeof response.balance === 'number') {
-                                                const balanceInSatoshis = Math.floor(response.balance * 100000000);
-                                                console.log(`Balance fetched: ${balanceInSatoshis} satoshis`);
-                                                resolve(balanceInSatoshis);
-                                        } else {
-                                                console.error('Failed to fetch balance:', response.error || 'Unknown error');
-                                                reject(new Error(response.error || 'Failed to fetch balance'));
-                                        }
-                                });
-                        });
+                if (!currentWallet || !currentWallet.address) {
+                        console.warn('No current wallet available for balance fetch');
+                        return 0;
                 }
-                console.warn('No current wallet available for balance fetch');
-                return 0;
+                console.log(`Fetching balance for address: ${currentWallet.address}`);
+                return new Promise((resolve, reject) => {
+                        chrome.runtime.sendMessage({ action: 'getBalance', address: currentWallet.address }, (response) => {
+                                if (chrome.runtime.lastError) {
+                                        console.error('Error fetching balance:', chrome.runtime.lastError);
+                                        reject(chrome.runtime.lastError);
+                                } else if (response.success && typeof response.balance === 'number') {
+                                        const balanceInSatoshis = Math.floor(response.balance * 100000000);
+                                        console.log(`Balance fetched: ${balanceInSatoshis} satoshis`);
+                                        resolve(balanceInSatoshis);
+                                } else {
+                                        console.error('Failed to fetch balance:', response.error || 'Unknown error');
+                                        reject(new Error(response.error || 'Failed to fetch balance'));
+                                }
+                        });
+                });
         }, [currentWallet]);
 
-        const sendTransaction = useCallback(async (toAddress, amount, feeRate) => {
+        const prepareTransaction = useCallback(async (toAddress, amount, feeRate) => {
+                return new Promise((resolve, reject) => {
+                        chrome.runtime.sendMessage({
+                                action: 'prepareBitcoinTransaction',
+                                toAddress: toAddress,
+                                amount: amount,
+                                feeRate: feeRate
+                        }, (response) => {
+                                if (chrome.runtime.lastError) {
+                                        reject(new Error(chrome.runtime.lastError.message));
+                                } else if (response.success) {
+                                        resolve({ success: true, ...response });
+                                } else {
+                                        resolve({ success: false, error: response.error });
+                                }
+                        });
+                });
+        }, []);
+
+        const sendTransaction = useCallback(async (toAddress, amount, feeRate, psbtHex) => {
                 return new Promise((resolve, reject) => {
                         chrome.runtime.sendMessage({
                                 action: 'sendBitcoin',
                                 toAddress: toAddress,
                                 amount: amount,
-                                feeRate: feeRate
+                                feeRate: feeRate,
+                                psbtHex: psbtHex
                         }, (response) => {
                                 if (chrome.runtime.lastError) {
                                         reject(new Error(chrome.runtime.lastError.message));
@@ -75,11 +92,11 @@ const App = () => {
         const initializeChatManager = useCallback((apiKey) => {
                 if (currentWallet) {
                         console.log('Initializing ChatManager with current wallet:', currentWallet);
-                        setChatManager(new ChatManager(apiKey, getBalance, sendTransaction));
+                        setChatManager(new ChatManager(apiKey, getBalance, sendTransaction, prepareTransaction));
                 } else {
                         console.warn('Cannot initialize ChatManager: No current wallet available');
                 }
-        }, [currentWallet, getBalance, sendTransaction]);
+        }, [currentWallet, getBalance, sendTransaction, prepareTransaction]);
 
         const setCurrentWalletInStorage = useCallback((wallet) => {
                 return new Promise((resolve, reject) => {
@@ -185,7 +202,7 @@ const App = () => {
                         isMountedRef.current = false;
                         clearInterval(interval);
                 };
-        }, [fetchBitcoinPrice, checkSession, initializeChatManager, currentWallet]);
+        }, [fetchBitcoinPrice, checkSession, initializeChatManager, currentWallet, prepareTransaction]);
 
         const handleCreateWallet = () => {
                 chrome.runtime.sendMessage({ action: 'createWallet' }, (response) => {
@@ -199,9 +216,32 @@ const App = () => {
                                 alert('Error creating wallet. Please try again.');
                                 return;
                         }
+
                         console.log('New wallet created:', response);
-                        setNewWallet(response);
+
+                        // Ensure the public key is included in the wallet object
+                        const walletWithPublicKey = {
+                                ...response,
+                                publicKey: response.publicKey || response.keyPair?.publicKey // Adjust based on your wallet structure
+                        };
+
+                        if (!walletWithPublicKey.publicKey) {
+                                console.error('Error: Wallet created without a public key');
+                                alert('Error creating wallet: Missing public key. Please try again.');
+                                return;
+                        }
+
+                        setNewWallet(walletWithPublicKey);
                         setView('showMnemonic');
+
+                        // Store the wallet with public key in chrome.storage.local
+                        chrome.storage.local.set({ tempNewWallet: walletWithPublicKey }, () => {
+                                if (chrome.runtime.lastError) {
+                                        console.error('Error storing new wallet:', chrome.runtime.lastError);
+                                } else {
+                                        console.log('New wallet stored temporarily');
+                                }
+                        });
                 });
         };
 
@@ -210,33 +250,49 @@ const App = () => {
         };
 
         const handleSetPassword = async (password) => {
-                if (!newWallet) {
-                        alert('No wallet data available');
-                        return;
-                }
-                console.log('Wallet data being sent for encryption:', newWallet);
-                chrome.runtime.sendMessage({
-                        action: 'encryptWallet',
-                        wallet: newWallet,
-                        password: password
-                }, async (response) => {
-                        console.log('Encryption response:', response);
-                        if (response && response.success) {
-                                const updatedWallets = [...wallets, response.encryptedWallet];
-                                setWallets(updatedWallets);
-                                await setCurrentWallet(response.encryptedWallet);
-                                setNewWallet(null);
-                                setCurrentPassword(password);
-                                chrome.runtime.sendMessage({
-                                        action: 'setSession',
-                                        wallets: updatedWallets,
-                                        currentWallet: response.encryptedWallet,
-                                        password
-                                });
-                                setView('home');
-                        } else {
-                                alert(`Failed to encrypt wallet: ${response ? response.error : 'Unknown error'}`);
+                chrome.storage.local.get(['tempNewWallet'], async (result) => {
+                        if (chrome.runtime.lastError) {
+                                console.error('Error retrieving new wallet:', chrome.runtime.lastError);
+                                alert('Error setting password. Please try again.');
+                                return;
                         }
+
+                        const newWallet = result.tempNewWallet;
+                        if (!newWallet) {
+                                alert('No wallet data available');
+                                return;
+                        }
+
+                        console.log('Wallet data being sent for encryption:', newWallet);
+                        chrome.runtime.sendMessage({
+                                action: 'encryptWallet',
+                                wallet: newWallet,
+                                password: password
+                        }, async (response) => {
+                                console.log('Encryption response:', response);
+                                if (response && response.success) {
+                                        const encryptedWallet = {
+                                                ...response.encryptedWallet,
+                                                publicKey: newWallet.publicKey // Ensure public key is included
+                                        };
+                                        const updatedWallets = [...wallets, encryptedWallet];
+                                        setWallets(updatedWallets);
+                                        await setCurrentWallet(encryptedWallet);
+                                        setNewWallet(null);
+                                        setCurrentPassword(password);
+                                        chrome.runtime.sendMessage({
+                                                action: 'setSession',
+                                                wallets: updatedWallets,
+                                                currentWallet: encryptedWallet,
+                                                password
+                                        });
+                                        // Clear the temporary stored wallet
+                                        chrome.storage.local.remove('tempNewWallet');
+                                        setView('home');
+                                } else {
+                                        alert(`Failed to encrypt wallet: ${response ? response.error : 'Unknown error'}`);
+                                }
+                        });
                 });
         };
 

@@ -9,6 +9,17 @@ const network = bitcoin.networks.testnet;
 
 const DUST = 330;
 
+const getNetworkFee = (psbt) => {
+        const inputValue = psbt.txInputs.reduce((sum, input, index) => {
+                const witnessUtxo = psbt.data.inputs[index].witnessUtxo;
+                return sum + (witnessUtxo ? witnessUtxo.value : 0);
+        }, 0);
+
+        const outputValue = psbt.txOutputs.reduce((sum, output) => sum + output.value, 0);
+
+        return inputValue - outputValue;
+};
+
 const getMinFee = async () => {
         if (!production) {
                 return 0;
@@ -83,25 +94,32 @@ const addPaymentInputs = (psbt, feeRate, paymentUtxos, redeemScript, paymentAddr
 
                 console.log('Adding input:', { txid: utxo.txid, vout: utxo.vout, witnessUtxo });
 
-                if (walletProvider === 'xverse') {
+                if (walletProvider === 'hdwallet') {
                         psbt.addInput({
                                 hash: utxo.txid,
                                 index: utxo.vout,
-                                witnessUtxo,
-                                redeemScript,
+                                witnessUtxo: {
+                                        script: Buffer.from(paymentScript, 'hex'),
+                                        value: utxo.satoshis,
+                                },
                         });
                 } else if (walletProvider === 'leather') {
                         psbt.addInput({
                                 hash: utxo.txid,
                                 index: utxo.vout,
-                                witnessUtxo,
+                                witnessUtxo: {
+                                        script: Buffer.from(paymentScript, 'hex'),
+                                        value: utxo.satoshis,
+                                },
                         });
                 } else {
                         psbt.addInput({
                                 hash: utxo.txid,
                                 index: utxo.vout,
-                                witnessUtxo,
-                                tapInternalKey: paymentTapInternalKey,
+                                witnessUtxo: {
+                                        script: Buffer.from(paymentScript, 'hex'),
+                                        value: utxo.satoshis,
+                                },
                         });
                 }
 
@@ -194,4 +212,4 @@ const getPsbtSize = (
         return { size, sizeWithChange };
 };
 
-export { getPsbtSize, addPaymentInputs, getMinFee };
+export { getPsbtSize, addPaymentInputs, getMinFee, getNetworkFee };

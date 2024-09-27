@@ -1,14 +1,15 @@
 // src/chatbot/ChatManager
 import OpenAI from 'openai';
 import { OPENAI_API_KEY } from '../config';
+import { prepareBitcoinTransaction } from '../background';
 
+import { getMinFee } from '../utils/fee';
 
 class ChatManager {
-        constructor(apiKey, getBalanceFunction, sendTransactionFunction) {
+        constructor(apiKey, getBalanceFunction, sendTransactionFunction, prepareTransactionFunction) {
                 this.messages = [];
                 this.apiKey = apiKey;
                 this.getBalance = getBalanceFunction;
-                this.sendTransaction = sendTransactionFunction;
                 this.requestQueue = [];
                 this.isProcessingQueue = false;
                 this.lastRequestTime = 0;
@@ -17,6 +18,10 @@ class ChatManager {
                 this.maxDelay = 300000; // Maximum delay of 5 minutes
                 this.currentDelay = this.baseDelay;
                 this.maxRetries = 1; // Maximum number of retries
+
+                this.prepareTransaction = prepareTransactionFunction;
+                this.sendTransaction = sendTransactionFunction;
+                this.pendingTransaction = null;
         }
 
         async loadMessages() {
@@ -63,10 +68,12 @@ class ChatManager {
                 while (retries < this.maxRetries) {
                         try {
                                 const response = await this.makeOpenAIRequest(userInput);
+                                const parsedResponse = JSON.parse(response);
+
                                 this.requestQueue.shift(); // Remove the processed request
                                 this.lastRequestTime = Date.now();
                                 this.currentDelay = this.baseDelay; // Reset delay on success
-                                resolve(response);
+                                resolve(JSON.stringify(parsedResponse, null, 2));
                                 break;
                         } catch (error) {
                                 if (error.message.includes('429')) {
@@ -127,15 +134,11 @@ class ChatManager {
                 try {
                         let parsed = JSON.parse(aiResponse);
 
-                        // Fetch current balance
                         const currentBalance = await this.getBalance();
-
-                        // Fetch current fee rate if not provided
                         if (parsed.feeRate === -1) {
                                 parsed.feeRate = await this.getCurrentFeeRate();
                         }
 
-                        // Validate transaction
                         if (parsed.intent === "BTC_TRANSFER") {
                                 if (parsed.amount > currentBalance) {
                                         parsed.intent = "INSUFFICIENT_FUNDS";
@@ -143,16 +146,75 @@ class ChatManager {
                                 } else if (parsed.amount <= 0 || isNaN(parsed.amount)) {
                                         parsed.intent = "INVALID_AMOUNT";
                                         parsed.error = "Invalid amount specified.";
+                                } else {
+                                        // Prepare the transaction
+                                        console.log('Preparing transaction:', { toAddress: parsed.toAddress, amount: parsed.amount, feeRate: parsed.feeRate });
+                                        const preparedTx = await this.prepareTransaction(parsed.toAddress, parsed.amount, parsed.feeRate);
+                                        console.log('Prepared transaction result:', preparedTx);
+                                        if (preparedTx.success) {
+                                                this.pendingTransaction = preparedTx;
+                                                parsed.pendingTransaction = preparedTx;
+                                                parsed.requiresConfirmation = true;
+                                        } else {
+                                                parsed.error = preparedTx.error;
+                                        }
                                 }
                         }
 
                         parsed.currentBalance = currentBalance;
-
                         return JSON.stringify(parsed, null, 2);
                 } catch (error) {
                         console.error('Error parsing AI response:', error);
                         throw new Error('Failed to parse AI response');
                 }
+        }
+
+        async prepareTransaction(toAddress, amount, feeRate) {
+                // Use the getMinFee function to get the current fee rate
+                const currentFeeRate = await getMinFee();
+
+                // Use the higher of the two fee rates
+                const finalFeeRate = Math.max(feeRate, currentFeeRate);
+
+                return new Promise((resolve, reject) => {
+                        chrome.runtime.sendMessage({
+                                action: 'prepareBitcoinTransaction',
+                                toAddress,
+                                amount,
+                                feeRate: finalFeeRate
+                        }, (response) => {
+                                if (chrome.runtime.lastError) {
+                                        reject(new Error(chrome.runtime.lastError.message));
+                                } else {
+                                        resolve(response);
+                                }
+                        });
+                });
+        }
+
+        async confirmTransaction(pendingTransaction) {
+                if (!pendingTransaction) {
+                        return { success: false, error: 'No pending transaction to confirm' };
+                }
+
+                try {
+                        const result = await this.sendTransaction(
+                                pendingTransaction.toAddress,
+                                pendingTransaction.amount,
+                                pendingTransaction.feeRate,
+                                pendingTransaction.psbtHex
+                        );
+                        this.pendingTransaction = null;
+                        return result;
+                } catch (error) {
+                        console.error('Error confirming transaction:', error);
+                        return { success: false, error: error.message };
+                }
+        }
+
+        cancelTransaction() {
+                this.pendingTransaction = null;
+                return { success: true, message: 'Transaction cancelled' };
         }
 
         async sendTransaction(toAddress, amount, feeRate) {
@@ -240,11 +302,11 @@ class ChatManager {
 
                 // Get current fee rate
                 try {
-                        feeRate = await this.getCurrentFeeRate();
+                        feeRate = await getMinFee();
                         console.log('Current fee rate:', feeRate);
                 } catch (feeRateError) {
                         console.error('Error fetching fee rate:', feeRateError);
-                        feeRate = -1;
+                        feeRate = 1; // Use a default value if fetching fails
                 }
 
                 // Validate transaction
@@ -261,20 +323,23 @@ class ChatManager {
                                 intent = "INVALID_ADDRESS";
                                 error = "Invalid or missing recipient address.";
                         } else {
-                                // Attempt to send the transaction
+                                // Prepare the transaction
                                 try {
-                                        console.log('Attempting to send transaction:', { toAddress, amount, feeRate });
-                                        transactionResult = await this.sendTransaction(toAddress, amount, feeRate);
-                                        console.log('Transaction result:', transactionResult);
-                                        if (transactionResult.success) {
-                                                error = null;
+                                        console.log('Preparing transaction:', { toAddress, amount, feeRate });
+                                        const preparedTx = await this.prepareTransaction(toAddress, amount, feeRate);
+                                        console.log('Prepared transaction result:', preparedTx);
+                                        if (preparedTx.success) {
+                                                transactionResult = {
+                                                        success: true,
+                                                        pendingTransaction: preparedTx,
+                                                        requiresConfirmation: true
+                                                };
                                         } else {
-                                                error = transactionResult.error || "Transaction failed for unknown reason.";
+                                                error = preparedTx.error || "Failed to prepare transaction.";
                                         }
                                 } catch (txError) {
-                                        console.error('Error during transaction:', txError);
-                                        error = `Transaction failed: ${txError.message}`;
-                                        transactionResult = { success: false, error: error };
+                                        console.error('Error preparing transaction:', txError);
+                                        error = `Failed to prepare transaction: ${txError.message}`;
                                 }
                         }
                 }
@@ -292,6 +357,26 @@ class ChatManager {
 
                 console.log('Generated fallback response:', response);
                 return JSON.stringify(response, null, 2);
+        }
+
+        // Add this method to confirm and send the prepared transaction
+        async confirmAndSendTransaction(pendingTransaction) {
+                if (!pendingTransaction) {
+                        return { success: false, error: 'No pending transaction to confirm' };
+                }
+
+                try {
+                        const result = await this.sendTransaction(
+                                pendingTransaction.toAddress,
+                                pendingTransaction.amount,
+                                pendingTransaction.feeRate,
+                                pendingTransaction.psbtHex
+                        );
+                        return result;
+                } catch (error) {
+                        console.error('Error confirming transaction:', error);
+                        return { success: false, error: error.message };
+                }
         }
 }
 

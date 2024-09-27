@@ -3,7 +3,6 @@ import { generateMnemonic, walletFromSeedPhrase } from './wallet';
 import { signMessage, verifyMessage } from './MessageSigning';
 import { createPsbt, signPsbt, broadcastTransaction, rejectPsbt, resetUtxoState } from './PsbtService.js';
 import { generateTransferPsbt } from './psbtGenerator';
-import { getMinFee } from './utils/fee';
 import CryptoJS from 'crypto-js';
 import { derivePublicKey } from './utils/cryptoUtils';
 import { getPaymentUtxos } from './PsbtService';
@@ -13,13 +12,19 @@ import * as bitcoin from 'bitcoinjs-lib';
 import * as ecc from 'tiny-secp256k1';
 import { ECPairFactory } from 'ecpair';
 
-import { sendBitcoinFromChat } from './services/bitcoinService';
+import { getMinFee, addPaymentInputs, getPsbtSize } from './utils/fee';
+
+import { validateAddress, sendBitcoinFromChat } from './services/bitcoinService';
+
+const NETWORK = bitcoin.networks.testnet;
 
 let lastMessageTimestamp = 0;
 const MESSAGE_DEBOUNCE_TIME = 50; // milliseconds
 
+// Initialize the elliptic curve library
 bitcoin.initEccLib(ecc);
 
+// Initialize ECPair
 const ECPair = ECPairFactory(ecc);
 
 let contentScriptReady = false;
@@ -209,10 +214,13 @@ function extendSession() {
 }
 
 // Function to get the current wallet
-function getCurrentWallet() {
+async function getCurrentWallet() {
         return new Promise((resolve, reject) => {
                 chrome.storage.local.get(['sessionCurrentWallet'], (result) => {
-                        if (result.sessionCurrentWallet) {
+                        if (chrome.runtime.lastError) {
+                                reject(new Error(chrome.runtime.lastError.message));
+                        } else if (result.sessionCurrentWallet) {
+                                console.log('Retrieved wallet:', JSON.stringify(result.sessionCurrentWallet, null, 2));
                                 resolve(result.sessionCurrentWallet);
                         } else {
                                 reject(new Error("No current wallet available"));
@@ -220,6 +228,7 @@ function getCurrentWallet() {
                 });
         });
 }
+
 // Function to get the current wallet address
 async function getCurrentAddress() {
         try {
@@ -356,12 +365,16 @@ async function handleEncryptWallet(request) {
         return new Promise((resolve, reject) => {
                 chrome.storage.local.get(['wallets'], (result) => {
                         let wallets = result.wallets || [];
-                        wallets.push(encryptionResult.encryptedWallet);
+                        const walletToStore = {
+                                ...encryptionResult.encryptedWallet,
+                                publicKey: request.wallet.publicKey // Ensure public key is stored
+                        };
+                        wallets.push(walletToStore);
                         chrome.storage.local.set({ wallets }, () => {
                                 if (chrome.runtime.lastError) {
                                         reject(new Error(chrome.runtime.lastError.message));
                                 } else {
-                                        resolve({ success: true, encryptedWallet: encryptionResult.encryptedWallet });
+                                        resolve({ success: true, encryptedWallet: walletToStore });
                                 }
                         });
                 });
@@ -492,6 +505,114 @@ async function showConfirmationDialog(request) {
         });
 }
 
+async function prepareBitcoinTransaction(toAddress, amountSatoshis, feeRate) {
+        console.log('Preparing Bitcoin transaction:', { toAddress, amountSatoshis, feeRate });
+        try {
+                // Validate recipient address
+                console.log('Validating recipient address...');
+                const isValidRecipient = validateAddress(toAddress);
+                console.log('Recipient address validation result:', isValidRecipient);
+
+                if (!isValidRecipient) {
+                        throw new Error(`Invalid recipient address: ${toAddress}`);
+                }
+
+                const currentWallet = await getCurrentWallet();
+                console.log('Current wallet:', currentWallet);
+
+                console.log('Validating sender address...');
+                const isValidSender = validateAddress(currentWallet.address);
+                console.log('Sender address validation result:', isValidSender);
+
+                if (!isValidSender) {
+                        throw new Error(`Invalid sender address: ${currentWallet.address}`);
+                }
+
+                if (!currentWallet.publicKey) {
+                        throw new Error('Wallet public key is missing');
+                }
+                console.log('Wallet public key:', currentWallet.publicKey);
+
+                const utxos = await getPaymentUtxos(currentWallet.address);
+                console.log('UTXOs:', utxos);
+
+                const psbt = new bitcoin.Psbt({ network: NETWORK });
+
+                // Add the recipient output
+                psbt.addOutput({
+                        address: toAddress,
+                        value: amountSatoshis,
+                });
+                console.log('Recipient output added to PSBT');
+
+                const pubkey = Buffer.from(currentWallet.publicKey, 'hex');
+                const p2wpkh = bitcoin.payments.p2wpkh({ pubkey, network: NETWORK });
+
+                console.log('Adding payment inputs...');
+                const result = addPaymentInputs(
+                        psbt,
+                        feeRate,
+                        utxos,
+                        null, // redeemScript (not needed for P2WPKH)
+                        currentWallet.address,
+                        p2wpkh.output.toString('hex'),
+                        pubkey.slice(1, 33), // tapInternalKey
+                        null, // estimateKeyPair (not needed for this use case)
+                        null, // tweakedEstimateSigner (not needed for this use case)
+                        'hdwallet', // walletProvider
+                        null, // estimatorRunestone (not needed for this use case)
+                        NETWORK
+                );
+
+                if (result.error) {
+                        throw new Error(result.error);
+                }
+                console.log('Payment inputs added successfully');
+
+                const psbtHex = psbt.toHex();
+                console.log('PSBT created:', psbtHex);
+
+                return {
+                        success: true,
+                        psbtHex,
+                        toAddress,
+                        amount: amountSatoshis,
+                        feeRate
+                };
+        } catch (error) {
+                console.error('Error preparing Bitcoin transaction:', error);
+                return { success: false, error: error.message };
+        }
+}
+
+async function handlePrepareBitcoinTransaction(request) {
+        const { toAddress, amount, feeRate } = request;
+        console.log('Preparing Bitcoin transaction:', { toAddress, amount, feeRate });
+        try {
+                const result = await prepareBitcoinTransaction(toAddress, amount, feeRate);
+                console.log('Prepared transaction result:', result);
+                return result;
+        } catch (error) {
+                console.error('Error preparing Bitcoin transaction:', error);
+                return { success: false, error: error.message || 'Unknown error occurred' };
+        }
+}
+
+async function handleSendBitcoin(request) {
+        const { toAddress, amount, feeRate, psbtHex } = request;
+        console.log('Sending Bitcoin:', { toAddress, amount, feeRate, psbtHex });
+        try {
+                const result = await sendBitcoinFromChat(toAddress, amount, feeRate, psbtHex);
+                if (!result.success) {
+                        console.error('Error in sendBitcoinFromChat:', result.error);
+                }
+                return result;
+        } catch (error) {
+                console.error('Error sending Bitcoin:', error);
+                return { success: false, error: error.message || 'Unknown error occurred' };
+        }
+}
+
 async function handleMessage(request) {
         console.log('Handling message:', request);
         try {
@@ -506,17 +627,11 @@ async function handleMessage(request) {
                                 console.log('Content script loaded');
                                 return { success: true };
 
+                        case 'prepareBitcoinTransaction':
+                                return await handlePrepareBitcoinTransaction(request);
+
                         case 'sendBitcoin':
-                                try {
-                                        const { toAddress, amount, feeRate } = request;
-                                        console.log('Sending Bitcoin:', { toAddress, amount, feeRate });
-                                        const result = await sendBitcoinFromChat(toAddress, amount, feeRate);
-                                        console.log('sendBitcoinFromChat result:', result);
-                                        return result;
-                                } catch (error) {
-                                        console.error('Error sending Bitcoin:', error);
-                                        return { success: false, error: error.message || 'Unknown error occurred' };
-                                }
+                                return await handleSendBitcoin(request);
 
                         case 'bitcoin_requestAccounts':
                         case 'requestAccounts':
@@ -616,6 +731,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 contentScriptReady = true;
                 sendResponse({ success: true });
                 return true;
+        }
+
+        if (request.action === 'prepareBitcoinTransaction') {
+                handlePrepareBitcoinTransaction(request).then(sendResponse);
+                return true; // Indicates that the response is sent asynchronously
         }
 
         // For other messages, use a less strict debouncing
@@ -753,5 +873,8 @@ export {
         setSession,
         handleGetSession,
         clearSession,
-        handleRejectPSBT
+        handleRejectPSBT,
+        handlePrepareBitcoinTransaction,
+        prepareBitcoinTransaction,
+        sendBitcoinFromChat
 };

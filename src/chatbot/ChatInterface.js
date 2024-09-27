@@ -7,6 +7,7 @@ const ChatInterface = ({ chatManager }) => {
         const [isLoading, setIsLoading] = useState(false);
         const [error, setError] = useState(null);
         const [isFallback, setIsFallback] = useState(false);
+        const [pendingTransaction, setPendingTransaction] = useState(null);
 
         useEffect(() => {
                 const loadMessages = async () => {
@@ -31,11 +32,17 @@ const ChatInterface = ({ chatManager }) => {
                                 const response = await chatManager.generateBotResponse(input);
                                 const parsedResponse = JSON.parse(response);
                                 setIsFallback(parsedResponse.isFallbackResponse || false);
+
+                                if (parsedResponse.transactionResult && parsedResponse.transactionResult.pendingTransaction) {
+                                        setPendingTransaction(parsedResponse.transactionResult.pendingTransaction);
+                                }
+
                                 const botMessage = {
                                         text: response,
                                         sender: 'bot',
                                         isFallback: parsedResponse.isFallbackResponse || false,
-                                        transactionResult: parsedResponse.transactionResult
+                                        pendingTransaction: parsedResponse.transactionResult && parsedResponse.transactionResult.pendingTransaction,
+                                        requiresConfirmation: parsedResponse.transactionResult && parsedResponse.transactionResult.requiresConfirmation
                                 };
                                 await chatManager.addMessage(botMessage);
                                 setMessages([...chatManager.getMessages()]);
@@ -48,6 +55,37 @@ const ChatInterface = ({ chatManager }) => {
                 }
         };
 
+        const handleConfirmTransaction = async (pendingTransaction) => {
+                try {
+                        const result = await chatManager.confirmAndSendTransaction(pendingTransaction);
+                        if (result.success) {
+                                const confirmationMessage = {
+                                        text: `Transaction confirmed! TXID: ${result.txid}`,
+                                        sender: 'bot'
+                                };
+                                await chatManager.addMessage(confirmationMessage);
+                                setMessages([...chatManager.getMessages()]);
+                                setPendingTransaction(null);
+                        } else {
+                                setError(`Failed to confirm transaction: ${result.error}`);
+                        }
+                } catch (error) {
+                        console.error('Error confirming transaction:', error);
+                        setError(`Error confirming transaction: ${error.message}`);
+                }
+        };
+
+        const handleCancelTransaction = () => {
+                chatManager.cancelTransaction();
+                setPendingTransaction(null);
+                const cancelMessage = {
+                        text: 'Transaction cancelled.',
+                        sender: 'bot'
+                };
+                chatManager.addMessage(cancelMessage);
+                setMessages([...chatManager.getMessages()]);
+        };
+
         return (
                 <div className="chat-container">
                         <div className="chat-box">
@@ -56,13 +94,14 @@ const ChatInterface = ({ chatManager }) => {
                                                 <div key={index} className={`message ${msg.sender} ${msg.isFallback ? 'fallback' : ''}`}>
                                                         <pre>{msg.text}</pre>
                                                         {msg.isFallback && <span className="fallback-label">Fallback Response</span>}
-                                                        {msg.transactionResult && (
-                                                                <div className="transaction-result">
-                                                                        {msg.transactionResult.success ? (
-                                                                                <span className="success">Transaction successful! TXID: {msg.transactionResult.txid}</span>
-                                                                        ) : (
-                                                                                <span className="error">Transaction failed: {msg.transactionResult.error}</span>
-                                                                        )}
+                                                        {msg.requiresConfirmation && msg.pendingTransaction && (
+                                                                <div className="transaction-confirmation">
+                                                                        <h3>Confirm Transaction</h3>
+                                                                        <p>To: {msg.pendingTransaction.toAddress}</p>
+                                                                        <p>Amount: {msg.pendingTransaction.amount} satoshis</p>
+                                                                        <p>Fee: {msg.pendingTransaction.feeRate} sat/vB</p>
+                                                                        <button onClick={() => handleConfirmTransaction(msg.pendingTransaction)}>Confirm</button>
+                                                                        <button onClick={handleCancelTransaction}>Cancel</button>
                                                                 </div>
                                                         )}
                                                 </div>
@@ -81,9 +120,9 @@ const ChatInterface = ({ chatManager }) => {
                                                 onChange={(e) => setInput(e.target.value)}
                                                 placeholder="Type your message..."
                                                 className="chat-input"
-                                                disabled={isLoading}
+                                                disabled={isLoading || !!pendingTransaction}
                                         />
-                                        <button type="submit" className="chat-send-button" disabled={isLoading}>
+                                        <button type="submit" className="chat-send-button" disabled={isLoading || !!pendingTransaction}>
                                                 {isLoading ? 'Processing...' : 'Send'}
                                         </button>
                                 </form>
