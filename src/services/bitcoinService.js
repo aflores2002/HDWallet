@@ -353,99 +353,236 @@ export async function sendBitcoinFromChat(toAddress, amountSatoshis, feeRate, ps
 
 
 
-// export async function sendBitcoin(senderWIF, recipientAddress, amountBTC, feeRate = null) {
-//         try {
-//                 console.log('sendBitcoin called with:', { recipientAddress, amountBTC, feeRate });
+export async function sendBitcoin(recipientAddress, amountSatoshis, feeRate = null) {
+        console.log('sendBitcoin called with:', { recipientAddress, amountSatoshis, feeRate });
 
-//                 if (!senderWIF) {
-//                         throw new Error('Sender WIF is not provided');
-//                 }
+        try {
+                if (!validateAddress(recipientAddress)) {
+                        throw new Error(`Invalid recipient address: ${recipientAddress}`);
+                }
 
-//                 const keyPair = ECPair.fromWIF(senderWIF, NETWORK);
-//                 const { address } = bitcoin.payments.p2wpkh({ pubkey: keyPair.publicKey, network: NETWORK });
+                const wallet = await getCurrentWallet();
+                console.log('Current wallet:', wallet);
 
-//                 const utxos = await getUTXOs(address);
-//                 console.log('Valid UTXOs:', utxos);
+                if (!validateAddress(wallet.address)) {
+                        throw new Error(`Invalid sender address: ${wallet.address}`);
+                }
 
-//                 if (utxos.length === 0) throw new Error('No UTXOs available');
+                const currentFeeRates = await getFeeRates();
+                console.log('Current fee rates:', currentFeeRates);
 
-//                 const psbt = new bitcoin.Psbt({ network: NETWORK });
+                if (!feeRate) {
+                        // Choose fee rate based on transaction amount
+                        if (amountSatoshis < 10000) { // For small transactions (less than 10,000 satoshis)
+                                feeRate = currentFeeRates.economyFee;
+                        } else if (amountSatoshis < 50000) { // For medium transactions
+                                feeRate = currentFeeRates.hourFee;
+                        } else { // For large transactions
+                                feeRate = currentFeeRates.halfHourFee;
+                        }
+                }
 
-//                 let totalInput = 0;
-//                 utxos.forEach(utxo => {
-//                         psbt.addInput({
-//                                 hash: utxo.txid,
-//                                 index: utxo.vout,
-//                                 witnessUtxo: {
-//                                         script: bitcoin.address.toOutputScript(address, NETWORK),
-//                                         value: utxo.value,
-//                                 }
-//                         });
-//                         totalInput += utxo.value;
-//                 });
+                // Ensure the fee rate is not lower than the minimum
+                feeRate = Math.max(feeRate, currentFeeRates.minimumFee);
+                console.log(`Using fee rate:`, feeRate);
 
-//                 console.log('Total input:', totalInput);
+                const feeRateValidation = validateFeeRate(feeRate);
+                if (feeRateValidation) {
+                        throw new Error(feeRateValidation);
+                }
 
-//                 const amountSatoshis = Math.floor(amountBTC * 100000000);
-//                 console.log('Amount in satoshis:', amountSatoshis);
+                let wif = await getWIF(wallet);
 
-//                 psbt.addOutput({
-//                         address: recipientAddress,
-//                         value: amountSatoshis,
-//                 });
+                const keyPair = ECPair.fromWIF(wif, NETWORK);
+                const publicKey = keyPair.publicKey.toString('hex');
 
-//                 if (!feeRate) {
-//                         feeRate = await getCurrentFeeRate();
-//                 }
-//                 console.log('Fee rate:', feeRate);
+                if (publicKey !== wallet.publicKey) {
+                        throw new Error('WIF does not correspond to the wallet public key');
+                }
 
-//                 // Estimate transaction size and calculate fee
-//                 const estimatedSize = utxos.length * 180 + 2 * 34 + 10; // Rough estimate
-//                 const fee = Math.max(estimatedSize * feeRate, 1000); // Ensure minimum fee of 1000 satoshis
-//                 console.log('Estimated fee:', fee);
+                const derivedAddress = bitcoin.payments.p2wpkh({ pubkey: keyPair.publicKey, network: NETWORK }).address;
+                if (derivedAddress !== wallet.address) {
+                        throw new Error('WIF does not correspond to the wallet address');
+                }
 
-//                 if (totalInput < amountSatoshis + fee) {
-//                         throw new Error(`Insufficient funds. Required: ${amountSatoshis + fee}, Available: ${totalInput}`);
-//                 }
+                const paymentAddress = wallet.address;
+                const paymentPublicKey = publicKey;
+                const paymentUtxos = await getPaymentUtxos(paymentAddress);
+                const paymentScript = bitcoin.address.toOutputScript(paymentAddress, NETWORK);
+                const paymentTapInternalKey = toXOnly(Buffer.from(paymentPublicKey, 'hex'));
 
-//                 // Add change output if necessary
-//                 const change = totalInput - amountSatoshis - fee;
-//                 if (change > 546) { // Dust threshold
-//                         psbt.addOutput({
-//                                 address: address,
-//                                 value: change,
-//                         });
-//                         console.log('Change output added:', change);
-//                 } else {
-//                         console.log('No change output added. Change amount:', change);
-//                 }
+                const psbt = new bitcoin.Psbt({ network: NETWORK });
+                console.log('Initial PSBT:', psbt.toBase64());
 
-//                 // Sign inputs
-//                 utxos.forEach((_, index) => {
-//                         psbt.signInput(index, keyPair);
-//                 });
+                psbt.addOutput({
+                        address: recipientAddress,
+                        value: amountSatoshis,
+                });
 
-//                 psbt.finalizeAllInputs();
+                const paymentResult = addPaymentInputs(
+                        psbt,
+                        feeRate,
+                        paymentUtxos,
+                        null,
+                        paymentAddress,
+                        paymentScript,
+                        paymentTapInternalKey,
+                        null,
+                        null,
+                        'hdwallet',
+                        null,
+                        NETWORK
+                );
 
-//                 const tx = psbt.extractTransaction();
-//                 const txHex = tx.toHex();
-//                 console.log('Transaction hex:', txHex);
+                if (paymentResult.error) {
+                        throw new Error(paymentResult.error);
+                }
 
-//                 // Broadcast transaction
-//                 try {
-//                         const txid = await broadcastTransaction(txHex);
-//                         console.log('Transaction broadcast successful. TXID:', txid);
-//                         return { success: true, txid: txid };
-//                 } catch (broadcastError) {
-//                         console.error('Error broadcasting transaction:', broadcastError);
-//                         if (broadcastError.response) {
-//                                 console.error('Response data:', await broadcastError.response.text());
-//                         }
-//                         throw broadcastError;
-//                 }
+                console.log('PSBT after adding inputs:', psbt.toBase64());
 
-//         } catch (error) {
-//                 console.error('Error sending Bitcoin:', error);
-//                 return { success: false, error: error.message };
-//         }
-// }
+                const estimatedVsize = getVirtualSize(psbt);
+                let estimatedFee = new BigNumber(estimatedVsize).multipliedBy(feeRate);
+                console.log('Initial estimated fee:', estimatedFee.toNumber());
+
+                // Add a 20% buffer to the fee
+                estimatedFee = estimatedFee.multipliedBy(1.2).integerValue(BigNumber.ROUND_CEIL);
+                console.log('Estimated fee with buffer:', estimatedFee.toNumber());
+
+                // Ensure the fee meets the minimum requirement
+                const minRequiredFee = new BigNumber(currentFeeRates.minimumFee).multipliedBy(estimatedVsize);
+                let finalFee = BigNumber.max(estimatedFee, minRequiredFee);
+                console.log('Initial final fee:', finalFee.toNumber());
+
+                // Update the PSBT with the final fee
+                const changeOutput = psbt.txOutputs.find(output => output.address === paymentAddress);
+                if (changeOutput) {
+                        const newChangeValue = changeOutput.value - finalFee.minus(estimatedFee).toNumber();
+                        if (newChangeValue >= 546) { // Dust threshold
+                                changeOutput.value = newChangeValue;
+                        } else {
+                                // If change is less than dust threshold, add it to the fee
+                                psbt.txOutputs = psbt.txOutputs.filter(output => output !== changeOutput);
+                                finalFee = finalFee.plus(changeOutput.value);
+                        }
+                } else {
+                        // If no change output, reduce the payment amount
+                        const paymentOutput = psbt.txOutputs.find(output => output.address === recipientAddress);
+                        if (paymentOutput) {
+                                paymentOutput.value -= finalFee.minus(estimatedFee).toNumber();
+                        } else {
+                                throw new Error('Unable to adjust fee: no suitable output found');
+                        }
+                }
+
+                console.log('PSBT after fee adjustment:', psbt.toBase64());
+
+                // Recalculate actual fee after adjustments
+                const totalInput = new BigNumber(psbt.inputsValue);
+                const totalOutput = new BigNumber(psbt.txOutputs.reduce((sum, output) => sum + output.value, 0));
+                finalFee = totalInput.minus(totalOutput);
+                console.log('Actual final fee after adjustments:', finalFee.toNumber());
+
+                const feeValidationError = validateFee(finalFee, totalInput);
+                if (feeValidationError) {
+                        throw new Error(feeValidationError);
+                }
+
+                if (totalInput.isLessThan(new BigNumber(amountSatoshis).plus(finalFee))) {
+                        throw new Error(`Insufficient funds. Required: ${new BigNumber(amountSatoshis).plus(finalFee)}, Available: ${totalInput}`);
+                }
+
+                return {
+                        success: true,
+                        psbt: psbt.toBase64(),
+                        fee: finalFee.toNumber(),
+                        feeRate: feeRate,
+                        totalInput: totalInput.toNumber(),
+                        totalOutput: totalOutput.toNumber()
+                };
+        } catch (error) {
+                console.error('Error in sendBitcoin:', error);
+                return { success: false, error: error.message || 'Unknown error occurred' };
+        }
+}
+
+export async function confirmAndBroadcastTransaction(psbtBase64) {
+        try {
+                const wallet = await getCurrentWallet();
+                let wif = await getWIF(wallet);
+                const keyPair = ECPair.fromWIF(wif, NETWORK);
+
+                const psbt = bitcoin.Psbt.fromBase64(psbtBase64);
+
+                // Signing inputs
+                psbt.data.inputs.forEach((input, index) => {
+                        try {
+                                psbt.signInput(index, keyPair);
+                                console.log(`Input ${index} signed successfully`);
+                        } catch (error) {
+                                console.error(`Error signing input ${index}:`, error);
+                                throw error;
+                        }
+                });
+
+                console.log('PSBT after signing all inputs:', psbt.toBase64());
+
+                const signedInputs = psbt.data.inputs.filter(input =>
+                        (input.partialSig && input.partialSig.length > 0) ||
+                        (input.finalScriptSig) ||
+                        (input.finalScriptWitness)
+                );
+                if (signedInputs.length !== psbt.data.inputs.length) {
+                        throw new Error(`Not all inputs were signed. Signed: ${signedInputs.length}, Total: ${psbt.data.inputs.length}`);
+                }
+
+                console.log('All signatures validated successfully');
+
+                try {
+                        psbt.finalizeAllInputs();
+                        console.log('PSBT finalized successfully');
+                } catch (error) {
+                        console.error('Error finalizing PSBT:', error);
+                        throw error;
+                }
+
+                const tx = psbt.extractTransaction();
+                console.log('Transaction extracted successfully');
+
+                const txHex = tx.toHex();
+                console.log('Transaction hex:', txHex);
+
+                const result = await broadcastTransaction(txHex);
+                console.log('broadcastTransaction result:', result);
+
+                if (result) {
+                        return { success: true, txid: result };
+                } else {
+                        console.error('Transaction failed:', result);
+                        return { success: false, error: 'Failed to broadcast transaction' };
+                }
+        } catch (error) {
+                console.error('Error in confirmAndBroadcastTransaction:', error);
+                return { success: false, error: error.message || 'Unknown error occurred' };
+        }
+}
+
+async function getWIF(wallet) {
+        let wif;
+        if (wallet.wif) {
+                wif = wallet.wif;
+                console.log('Using unencrypted WIF');
+        } else if (wallet.encryptedWIF) {
+                const password = await getWalletPassword();
+                if (!password) {
+                        throw new Error('Wallet password not available');
+                }
+                wif = CryptoJS.AES.decrypt(wallet.encryptedWIF, password).toString(CryptoJS.enc.Utf8);
+                if (!wif) {
+                        throw new Error('Failed to decrypt WIF');
+                }
+                console.log('WIF decrypted successfully');
+        } else {
+                throw new Error('No WIF available in the wallet');
+        }
+        return wif;
+}
