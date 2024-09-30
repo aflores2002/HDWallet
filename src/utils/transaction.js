@@ -10,6 +10,22 @@ bitcoin.initEccLib(ecc);
 const ECPair = ECPairFactory(ecc);
 const network = bitcoin.networks.testnet;
 
+export function getVirtualSize(psbt) {
+        // Estimate the virtual size based on the number of inputs and outputs
+        const inputCount = psbt.data.inputs.length;
+        const outputCount = psbt.data.outputs.length;
+
+        // Rough estimate:
+        // 10 bytes for version, locktime
+        // 1 byte for input count, 1 byte for output count
+        // 32 bytes for each input (simplified)
+        // 31 bytes for each output (simplified)
+        // Add some buffer for potential witnesses
+        const estimatedVsize = Math.ceil((10 + 1 + 1 + (inputCount * 32) + (outputCount * 31) + (inputCount * 20)) * 1.05);
+
+        return estimatedVsize;
+}
+
 const tweakSigner = (signer, opts) => {
         let privateKey = signer.privateKey;
         if (!privateKey) {

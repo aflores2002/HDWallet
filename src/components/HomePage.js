@@ -2,7 +2,7 @@
 import React, { useState, useEffect } from 'react';
 import TransactionHistory from './TransactionHistory';
 
-const HomePage = ({ wallet, wallets, onLogout, onSwitchWallet, onCreateWallet, onSend, onReceive }) => {
+const HomePage = ({ wallet, wallets, onLogout, onSwitchWallet, onCreateWallet, onSend, onReceive, onContacts }) => {
         const [balance, setBalance] = useState(null);
         const [isLoading, setIsLoading] = useState(true);
         const [error, setError] = useState(null);
@@ -72,6 +72,7 @@ const HomePage = ({ wallet, wallets, onLogout, onSwitchWallet, onCreateWallet, o
                         <button className="btn" onClick={onSend}>Send</button>
                         <button className="btn" onClick={onReceive}>Receive</button>
                         <button className="btn" onClick={() => setShowTransactionHistory(true)}>View Transaction History</button>
+                        <button className="btn" onClick={onContacts}>Contacts</button>
                         <button className="btn" onClick={onCreateWallet}>Create New Wallet</button>
                         <button className="btn" onClick={onLogout}>Logout</button>
                 </div>

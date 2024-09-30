@@ -7,7 +7,11 @@ import CryptoJS from 'crypto-js';
 
 import { getPaymentUtxos, signPsbt } from '../PsbtService';
 import { addPaymentInputs, getNetworkFee } from '../utils/fee';
-import { toXOnly } from '../utils/transaction';
+import { toXOnly, getVirtualSize } from '../utils/transaction';
+
+import { getMinFee } from '../utils/fee';
+import BigNumber from 'bignumber.js';
+import { validateFee } from '../utils/feeValidation';
 
 // Initialize the elliptic curve library
 bitcoin.initEccLib(ecc);
@@ -19,43 +23,53 @@ const ECPair = ECPairFactory(ecc);
 const NETWORK = bitcoin.networks.testnet;
 const MEMPOOL_API = 'https://mempool.space/testnet/api';
 
-async function getUTXOs(address) {
-        const response = await ky.get(`${MEMPOOL_API}/address/${address}/utxo`).json();
-        return response;
+export async function getFeeRates() {
+        try {
+                const response = await ky.get(`${MEMPOOL_API}/v1/fees/recommended`).json();
+                return {
+                        fastestFee: response.fastestFee,
+                        halfHourFee: response.halfHourFee,
+                        hourFee: response.hourFee,
+                        economyFee: response.economyFee,
+                        minimumFee: response.minimumFee
+                };
+        } catch (error) {
+                console.error('Error fetching fee rates:', error);
+                return {
+                        fastestFee: 20,
+                        halfHourFee: 10,
+                        hourFee: 5,
+                        economyFee: 3,
+                        minimumFee: 1
+                };
+        }
 }
 
-async function verifyUTXOs(utxos) {
-        const validUTXOs = [];
-        for (const utxo of utxos) {
-                try {
-                        const response = await fetch(`${MEMPOOL_API}/tx/${utxo.txid}`);
-                        if (response.ok) {
-                                const txData = await response.json();
-                                if (txData.status.confirmed) {
-                                        validUTXOs.push(utxo);
-                                }
-                        }
-                } catch (error) {
-                        console.error('Error verifying UTXO:', error);
-                }
+export function validateFeeRate(feeRate) {
+        let fr;
+        try {
+                fr = new BigNumber(feeRate);
+        } catch (e) {
+                return "Invalid fee rate.";
         }
-        return validUTXOs;
+        if (!fr.isFinite() || fr.isLessThan(1)) {
+                return "Fee rate must be at least 1 sat/vB.";
+        }
+        if (fr.isGreaterThan(1000)) {
+                return "Fee rate is unusually high. Please double-check.";
+        }
+        return '';
 }
 
 export function validateAddress(address) {
         try {
-                bitcoin.address.toOutputScript(address, bitcoin.networks.testnet);
+                bitcoin.address.toOutputScript(address, NETWORK);
                 console.log('Address validated successfully:', address);
                 return true;
         } catch (error) {
                 console.error('Address validation error:', error);
                 return false;
         }
-}
-
-async function getCurrentFeeRate() {
-        const response = await ky.get(`${MEMPOOL_API}/v1/fees/recommended`).json();
-        return response.halfHourFee; // satoshis per byte
 }
 
 async function broadcastTransaction(txHex) {
@@ -93,108 +107,10 @@ async function getWalletPassword() {
         });
 }
 
-export async function sendBitcoin(senderWIF, recipientAddress, amountBTC, feeRate = null) {
-        try {
-                console.log('sendBitcoin called with:', { recipientAddress, amountBTC, feeRate });
-
-                if (!senderWIF) {
-                        throw new Error('Sender WIF is not provided');
-                }
-
-                const keyPair = ECPair.fromWIF(senderWIF, NETWORK);
-                const { address } = bitcoin.payments.p2wpkh({ pubkey: keyPair.publicKey, network: NETWORK });
-
-                const utxos = await getUTXOs(address);
-                console.log('Valid UTXOs:', utxos);
-
-                if (utxos.length === 0) throw new Error('No UTXOs available');
-
-                const psbt = new bitcoin.Psbt({ network: NETWORK });
-
-                let totalInput = 0;
-                utxos.forEach(utxo => {
-                        psbt.addInput({
-                                hash: utxo.txid,
-                                index: utxo.vout,
-                                witnessUtxo: {
-                                        script: bitcoin.address.toOutputScript(address, NETWORK),
-                                        value: utxo.value,
-                                }
-                        });
-                        totalInput += utxo.value;
-                });
-
-                console.log('Total input:', totalInput);
-
-                const amountSatoshis = Math.floor(amountBTC * 100000000);
-                console.log('Amount in satoshis:', amountSatoshis);
-
-                psbt.addOutput({
-                        address: recipientAddress,
-                        value: amountSatoshis,
-                });
-
-                if (!feeRate) {
-                        feeRate = await getCurrentFeeRate();
-                }
-                console.log('Fee rate:', feeRate);
-
-                // Estimate transaction size and calculate fee
-                const estimatedSize = utxos.length * 180 + 2 * 34 + 10; // Rough estimate
-                const fee = Math.max(estimatedSize * feeRate, 1000); // Ensure minimum fee of 1000 satoshis
-                console.log('Estimated fee:', fee);
-
-                if (totalInput < amountSatoshis + fee) {
-                        throw new Error(`Insufficient funds. Required: ${amountSatoshis + fee}, Available: ${totalInput}`);
-                }
-
-                // Add change output if necessary
-                const change = totalInput - amountSatoshis - fee;
-                if (change > 546) { // Dust threshold
-                        psbt.addOutput({
-                                address: address,
-                                value: change,
-                        });
-                        console.log('Change output added:', change);
-                } else {
-                        console.log('No change output added. Change amount:', change);
-                }
-
-                // Sign inputs
-                utxos.forEach((_, index) => {
-                        psbt.signInput(index, keyPair);
-                });
-
-                psbt.finalizeAllInputs();
-
-                const tx = psbt.extractTransaction();
-                const txHex = tx.toHex();
-                console.log('Transaction hex:', txHex);
-
-                // Broadcast transaction
-                try {
-                        const txid = await broadcastTransaction(txHex);
-                        console.log('Transaction broadcast successful. TXID:', txid);
-                        return { success: true, txid: txid };
-                } catch (broadcastError) {
-                        console.error('Error broadcasting transaction:', broadcastError);
-                        if (broadcastError.response) {
-                                console.error('Response data:', await broadcastError.response.text());
-                        }
-                        throw broadcastError;
-                }
-
-        } catch (error) {
-                console.error('Error sending Bitcoin:', error);
-                return { success: false, error: error.message };
-        }
-}
-
 export async function sendBitcoinFromChat(toAddress, amountSatoshis, feeRate, psbtHex) {
         console.log('sendBitcoinFromChat called with:', { toAddress, amountSatoshis, feeRate, psbtHex });
 
         try {
-                // Validate addresses
                 if (!validateAddress(toAddress)) {
                         throw new Error(`Invalid recipient address: ${toAddress}`);
                 }
@@ -206,13 +122,22 @@ export async function sendBitcoinFromChat(toAddress, amountSatoshis, feeRate, ps
                         throw new Error(`Invalid sender address: ${wallet.address}`);
                 }
 
+                if (!feeRate) {
+                        const feeRates = await getFeeRates();
+                        feeRate = feeRates.minimumFee;
+                }
+                console.log(`Using fee rate:`, feeRate);
+
+                const feeRateValidation = validateFeeRate(feeRate);
+                if (feeRateValidation) {
+                        throw new Error(feeRateValidation);
+                }
+
                 let wif;
                 if (wallet.wif) {
-                        // The WIF is not encrypted
                         wif = wallet.wif;
                         console.log('Using unencrypted WIF');
                 } else if (wallet.encryptedWIF) {
-                        // The WIF is encrypted
                         const password = await getWalletPassword();
                         if (!password) {
                                 throw new Error('Wallet password not available');
@@ -229,49 +154,46 @@ export async function sendBitcoinFromChat(toAddress, amountSatoshis, feeRate, ps
                 const keyPair = ECPair.fromWIF(wif, NETWORK);
                 const publicKey = keyPair.publicKey.toString('hex');
 
-                // Verify that the public key matches
                 if (publicKey !== wallet.publicKey) {
-                        console.error('Public key mismatch');
-                        console.error('Derived:', publicKey);
-                        console.error('Stored:', wallet.publicKey);
                         throw new Error('WIF does not correspond to the wallet public key');
                 }
 
-                // Verify the keyPair corresponds to the wallet address
                 const derivedAddress = bitcoin.payments.p2wpkh({ pubkey: keyPair.publicKey, network: NETWORK }).address;
                 if (derivedAddress !== wallet.address) {
                         throw new Error('WIF does not correspond to the wallet address');
                 }
 
-                // Prepare PSBT inputs
                 const paymentAddress = wallet.address;
                 const paymentPublicKey = publicKey;
                 const paymentUtxos = await getPaymentUtxos(paymentAddress);
                 const paymentScript = bitcoin.address.toOutputScript(paymentAddress, NETWORK);
                 const paymentTapInternalKey = toXOnly(Buffer.from(paymentPublicKey, 'hex'));
 
-                // Create new PSBT
                 const psbt = new bitcoin.Psbt({ network: NETWORK });
+                console.log('Initial PSBT:', psbt.toBase64());
 
-                // Add recipient output
                 psbt.addOutput({
                         address: toAddress,
                         value: amountSatoshis,
                 });
 
-                // Add inputs and calculate fee
+                // Get current fee rates
+                const currentFeeRates = await getFeeRates();
+                const effectiveFeeRate = Math.max(feeRate, currentFeeRates.minimumFee, 1);
+                console.log(`Using effective fee rate: ${effectiveFeeRate}`);
+
                 const paymentResult = addPaymentInputs(
                         psbt,
-                        feeRate,
+                        effectiveFeeRate,
                         paymentUtxos,
-                        null, // redeemScript (not needed for P2WPKH)
+                        null,
                         paymentAddress,
                         paymentScript,
                         paymentTapInternalKey,
-                        null, // estimateKeyPair (not needed for this use case)
-                        null, // tweakedEstimateSigner (not needed for this use case)
-                        'hdwallet', // walletProvider
-                        null, // estimatorRunestone (not needed for this use case)
+                        null,
+                        null,
+                        'hdwallet',
+                        null,
                         NETWORK
                 );
 
@@ -279,31 +201,72 @@ export async function sendBitcoinFromChat(toAddress, amountSatoshis, feeRate, ps
                         throw new Error(paymentResult.error);
                 }
 
-                // Calculate network fee
-                const networkFee = getNetworkFee(psbt);
+                console.log('PSBT after adding inputs:', psbt.toBase64());
 
-                console.log('PSBT created:', psbt.toBase64());
-                console.log('Network fee:', networkFee);
+                const estimatedVsize = getVirtualSize(psbt);
+                let estimatedFee = new BigNumber(estimatedVsize).multipliedBy(effectiveFeeRate);
+                console.log('Initial estimated fee:', estimatedFee.toNumber());
 
-                // Sign all inputs
+                // Add a 20% buffer to the fee
+                estimatedFee = estimatedFee.multipliedBy(1.2).integerValue(BigNumber.ROUND_CEIL);
+                console.log('Estimated fee with buffer:', estimatedFee.toNumber());
+
+                // Ensure the fee meets the minimum requirement
+                const minRequiredFee = new BigNumber(currentFeeRates.minimumFee).multipliedBy(estimatedVsize);
+                let finalFee = BigNumber.max(estimatedFee, minRequiredFee);
+                console.log('Initial final fee:', finalFee.toNumber());
+
+                // Update the PSBT with the final fee
+                const changeOutput = psbt.txOutputs.find(output => output.address === paymentAddress);
+                if (changeOutput) {
+                        const newChangeValue = changeOutput.value - finalFee.minus(estimatedFee).toNumber();
+                        if (newChangeValue >= 546) { // Dust threshold
+                                changeOutput.value = newChangeValue;
+                        } else {
+                                // If change is less than dust threshold, add it to the fee
+                                psbt.txOutputs = psbt.txOutputs.filter(output => output !== changeOutput);
+                                finalFee = finalFee.plus(changeOutput.value);
+                        }
+                } else {
+                        // If no change output, reduce the payment amount
+                        const paymentOutput = psbt.txOutputs.find(output => output.address === toAddress);
+                        if (paymentOutput) {
+                                paymentOutput.value -= finalFee.minus(estimatedFee).toNumber();
+                        } else {
+                                throw new Error('Unable to adjust fee: no suitable output found');
+                        }
+                }
+
+                console.log('PSBT after fee adjustment:', psbt.toBase64());
+
+                // Recalculate actual fee after adjustments
+                const totalInput = new BigNumber(psbt.inputsValue);
+                const totalOutput = new BigNumber(psbt.txOutputs.reduce((sum, output) => sum + output.value, 0));
+                finalFee = totalInput.minus(totalOutput);
+                console.log('Actual final fee after adjustments:', finalFee.toNumber());
+
+                const feeValidationError = validateFee(finalFee, totalInput);
+                if (feeValidationError) {
+                        throw new Error(feeValidationError);
+                }
+
+                if (totalInput.isLessThan(new BigNumber(amountSatoshis).plus(finalFee))) {
+                        throw new Error(`Insufficient funds. Required: ${new BigNumber(amountSatoshis).plus(finalFee)}, Available: ${totalInput}`);
+                }
+
+                // Signing inputs
                 psbt.data.inputs.forEach((input, index) => {
                         try {
-                                if (input.witnessUtxo) {
-                                        // This is likely a P2WPKH input
-                                        psbt.signInput(index, keyPair);
-                                } else if (input.nonWitnessUtxo) {
-                                        // This is likely a P2PKH input
-                                        psbt.signInput(index, keyPair);
-                                } else {
-                                        console.error(`Unknown input type for input ${index}`);
-                                }
+                                psbt.signInput(index, keyPair);
                                 console.log(`Input ${index} signed successfully`);
                         } catch (error) {
                                 console.error(`Error signing input ${index}:`, error);
+                                throw error;
                         }
                 });
 
-                // Verify all inputs are signed
+                console.log('PSBT after signing all inputs:', psbt.toBase64());
+
                 const signedInputs = psbt.data.inputs.filter(input =>
                         (input.partialSig && input.partialSig.length > 0) ||
                         (input.finalScriptSig) ||
@@ -313,17 +276,66 @@ export async function sendBitcoinFromChat(toAddress, amountSatoshis, feeRate, ps
                         throw new Error(`Not all inputs were signed. Signed: ${signedInputs.length}, Total: ${psbt.data.inputs.length}`);
                 }
 
-                // Finalize the PSBT
-                psbt.finalizeAllInputs();
+                console.log('All signatures validated successfully');
 
-                // Extract transaction
-                const tx = psbt.extractTransaction();
-                console.log('Transaction extracted:', tx);
+                try {
+                        psbt.finalizeAllInputs();
+                        console.log('PSBT finalized successfully');
+                } catch (error) {
+                        console.error('Error finalizing PSBT:', error);
+                        throw error;
+                }
+
+                let tx = psbt.extractTransaction();
+                console.log('Transaction extracted successfully');
+
+                // Final validation and adjustment
+                const finalVsize = tx.virtualSize();
+                const finalFeeRate = finalFee.dividedBy(finalVsize);
+                console.log('Final actual fee:', finalFee.toNumber());
+                console.log('Final fee rate:', finalFeeRate.toNumber().toFixed(2), 'sat/vB');
+
+                // If the fee rate is still below the minimum, adjust it one last time
+                if (finalFee.isLessThan(minRequiredFee)) {
+                        const additionalFee = minRequiredFee.minus(finalFee).plus(100); // Add 100 satoshis as buffer
+                        console.log('Additional fee needed:', additionalFee.toNumber());
+
+                        // Adjust the outputs again
+                        if (changeOutput) {
+                                changeOutput.value -= additionalFee.toNumber();
+                                if (changeOutput.value < 546) {
+                                        psbt.txOutputs = psbt.txOutputs.filter(output => output !== changeOutput);
+                                        finalFee = finalFee.plus(changeOutput.value);
+                                }
+                        } else {
+                                const paymentOutput = psbt.txOutputs.find(output => output.address === toAddress);
+                                paymentOutput.value -= additionalFee.toNumber();
+                        }
+
+                        // Re-sign and finalize
+                        psbt.clearFinalizedInput();
+                        psbt.data.inputs.forEach((input, index) => {
+                                psbt.signInput(index, keyPair);
+                        });
+                        psbt.finalizeAllInputs();
+
+                        tx = psbt.extractTransaction();
+                        finalFee = new BigNumber(psbt.inputsValue).minus(psbt.outputsValue);
+                        finalFeeRate = finalFee.dividedBy(tx.virtualSize());
+                        console.log('New final fee:', finalFee.toNumber());
+                        console.log('New final fee rate:', finalFeeRate.toNumber().toFixed(2), 'sat/vB');
+                }
+
+                if (finalFeeRate.isLessThan(currentFeeRates.minimumFee)) {
+                        throw new Error(`Final fee rate (${finalFeeRate.toNumber().toFixed(2)} sat/vB) is still below the minimum (${currentFeeRates.minimumFee} sat/vB)`);
+                }
+
+                console.log('Extracted transaction:', tx);
+                console.log('Final fee rate:', finalFeeRate.toNumber().toFixed(2), 'sat/vB');
 
                 const txHex = tx.toHex();
                 console.log('Transaction hex:', txHex);
 
-                // Broadcast transaction
                 const result = await broadcastTransaction(txHex);
                 console.log('broadcastTransaction result:', result);
 
@@ -338,3 +350,102 @@ export async function sendBitcoinFromChat(toAddress, amountSatoshis, feeRate, ps
                 return { success: false, error: error.message || 'Unknown error occurred' };
         }
 }
+
+
+
+// export async function sendBitcoin(senderWIF, recipientAddress, amountBTC, feeRate = null) {
+//         try {
+//                 console.log('sendBitcoin called with:', { recipientAddress, amountBTC, feeRate });
+
+//                 if (!senderWIF) {
+//                         throw new Error('Sender WIF is not provided');
+//                 }
+
+//                 const keyPair = ECPair.fromWIF(senderWIF, NETWORK);
+//                 const { address } = bitcoin.payments.p2wpkh({ pubkey: keyPair.publicKey, network: NETWORK });
+
+//                 const utxos = await getUTXOs(address);
+//                 console.log('Valid UTXOs:', utxos);
+
+//                 if (utxos.length === 0) throw new Error('No UTXOs available');
+
+//                 const psbt = new bitcoin.Psbt({ network: NETWORK });
+
+//                 let totalInput = 0;
+//                 utxos.forEach(utxo => {
+//                         psbt.addInput({
+//                                 hash: utxo.txid,
+//                                 index: utxo.vout,
+//                                 witnessUtxo: {
+//                                         script: bitcoin.address.toOutputScript(address, NETWORK),
+//                                         value: utxo.value,
+//                                 }
+//                         });
+//                         totalInput += utxo.value;
+//                 });
+
+//                 console.log('Total input:', totalInput);
+
+//                 const amountSatoshis = Math.floor(amountBTC * 100000000);
+//                 console.log('Amount in satoshis:', amountSatoshis);
+
+//                 psbt.addOutput({
+//                         address: recipientAddress,
+//                         value: amountSatoshis,
+//                 });
+
+//                 if (!feeRate) {
+//                         feeRate = await getCurrentFeeRate();
+//                 }
+//                 console.log('Fee rate:', feeRate);
+
+//                 // Estimate transaction size and calculate fee
+//                 const estimatedSize = utxos.length * 180 + 2 * 34 + 10; // Rough estimate
+//                 const fee = Math.max(estimatedSize * feeRate, 1000); // Ensure minimum fee of 1000 satoshis
+//                 console.log('Estimated fee:', fee);
+
+//                 if (totalInput < amountSatoshis + fee) {
+//                         throw new Error(`Insufficient funds. Required: ${amountSatoshis + fee}, Available: ${totalInput}`);
+//                 }
+
+//                 // Add change output if necessary
+//                 const change = totalInput - amountSatoshis - fee;
+//                 if (change > 546) { // Dust threshold
+//                         psbt.addOutput({
+//                                 address: address,
+//                                 value: change,
+//                         });
+//                         console.log('Change output added:', change);
+//                 } else {
+//                         console.log('No change output added. Change amount:', change);
+//                 }
+
+//                 // Sign inputs
+//                 utxos.forEach((_, index) => {
+//                         psbt.signInput(index, keyPair);
+//                 });
+
+//                 psbt.finalizeAllInputs();
+
+//                 const tx = psbt.extractTransaction();
+//                 const txHex = tx.toHex();
+//                 console.log('Transaction hex:', txHex);
+
+//                 // Broadcast transaction
+//                 try {
+//                         const txid = await broadcastTransaction(txHex);
+//                         console.log('Transaction broadcast successful. TXID:', txid);
+//                         return { success: true, txid: txid };
+//                 } catch (broadcastError) {
+//                         console.error('Error broadcasting transaction:', broadcastError);
+//                         if (broadcastError.response) {
+//                                 console.error('Response data:', await broadcastError.response.text());
+//                         }
+//                         throw broadcastError;
+//                 }
+
+//         } catch (error) {
+//                 console.error('Error sending Bitcoin:', error);
+//                 return { success: false, error: error.message };
+//         }
+// }

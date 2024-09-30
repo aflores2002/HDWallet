@@ -1,9 +1,9 @@
-// src/chatbot/ChatManager
+// src/chatbot/ChatManager.js
 import OpenAI from 'openai';
 import { OPENAI_API_KEY } from '../config';
 import { prepareBitcoinTransaction } from '../background';
-
 import { getMinFee } from '../utils/fee';
+import { getFeeRates } from '../services/bitcoinService';
 
 class ChatManager {
         constructor(apiKey, getBalanceFunction, sendTransactionFunction, prepareTransactionFunction) {
@@ -22,6 +22,18 @@ class ChatManager {
                 this.prepareTransaction = prepareTransactionFunction;
                 this.sendTransaction = sendTransactionFunction;
                 this.pendingTransaction = null;
+
+                this.contacts = [];
+                this.loadContacts();
+        }
+
+        async loadContacts() {
+                return new Promise((resolve) => {
+                        chrome.storage.local.get(['contacts'], (result) => {
+                                this.contacts = result.contacts || [];
+                                resolve(this.contacts);
+                        });
+                });
         }
 
         async loadMessages() {
@@ -102,9 +114,9 @@ class ChatManager {
 
         async makeOpenAIRequest(userInput) {
                 const context = `You are an AI assistant for a Bitcoin wallet extension.
-                Parse the user's input for intent, amount, address, and fee rate related to Bitcoin transactions.
-                Respond with a JSON object containing these fields. If any field is missing, use -1 as a placeholder.
-                For fee rate, if not specified, fetch the current market rate.`;
+        Parse the user's input for intent, amount, address, and fee rate related to Bitcoin transactions.
+        Respond with a JSON object containing these fields. If any field is missing, use -1 as a placeholder.
+        For fee rate, if not specified, fetch the current market rate.`;
 
                 const prompt = `${context}\n\nUser input: ${userInput}\n\nGenerate a JSON response:`;
 
@@ -133,13 +145,35 @@ class ChatManager {
         async validateAndNormalizeResponse(aiResponse, userInput) {
                 try {
                         let parsed = JSON.parse(aiResponse);
-
                         const currentBalance = await this.getBalance();
-                        if (parsed.feeRate === -1) {
-                                parsed.feeRate = await this.getCurrentFeeRate();
+                        const feeRates = await getFeeRates();
+
+                        // Choose fee rate based on transaction amount
+                        let recommendedFeeRate;
+                        if (parsed.amount < 10000) { // For small transactions (less than 10,000 satoshis)
+                                recommendedFeeRate = feeRates.economyFee;
+                        } else if (parsed.amount < 50000) { // For medium transactions
+                                recommendedFeeRate = feeRates.hourFee;
+                        } else { // For large transactions
+                                recommendedFeeRate = feeRates.halfHourFee;
                         }
 
+                        // Use the recommended fee rate, but ensure it's not lower than the minimum
+                        parsed.feeRate = Math.max(recommendedFeeRate, feeRates.minimumFee);
+
                         if (parsed.intent === "BTC_TRANSFER") {
+                                // Check if the toAddress is a contact username
+                                if (parsed.toAddress.startsWith('@')) {
+                                        const contactUsername = parsed.toAddress.substring(1);
+                                        const contact = this.contacts.find(c => c.username.toLowerCase() === contactUsername.toLowerCase());
+                                        if (contact) {
+                                                parsed.toAddress = contact.address;
+                                        } else {
+                                                parsed.error = `Contact @${contactUsername} not found.`;
+                                                return JSON.stringify(parsed, null, 2);
+                                        }
+                                }
+
                                 if (parsed.amount > currentBalance) {
                                         parsed.intent = "INSUFFICIENT_FUNDS";
                                         parsed.error = `Insufficient funds. Your current balance is ${currentBalance} satoshis.`;
@@ -162,6 +196,7 @@ class ChatManager {
                         }
 
                         parsed.currentBalance = currentBalance;
+                        parsed.feeRates = feeRates; // Include all fee rates in the response
                         return JSON.stringify(parsed, null, 2);
                 } catch (error) {
                         console.error('Error parsing AI response:', error);
@@ -170,26 +205,35 @@ class ChatManager {
         }
 
         async prepareTransaction(toAddress, amount, feeRate) {
-                // Use the getMinFee function to get the current fee rate
-                const currentFeeRate = await getMinFee();
+                console.log('Preparing transaction:', { toAddress, amount, feeRate });
+                try {
+                        const currentFeeRates = await getFeeRates();
+                        const effectiveFeeRate = Math.max(feeRate || recommendedFeeRate, currentFeeRates.minimumFee, 1);
+                        console.log(`Using effective fee rate: ${effectiveFeeRate}`);
 
-                // Use the higher of the two fee rates
-                const finalFeeRate = Math.max(feeRate, currentFeeRate);
-
-                return new Promise((resolve, reject) => {
-                        chrome.runtime.sendMessage({
-                                action: 'prepareBitcoinTransaction',
-                                toAddress,
-                                amount,
-                                feeRate: finalFeeRate
-                        }, (response) => {
-                                if (chrome.runtime.lastError) {
-                                        reject(new Error(chrome.runtime.lastError.message));
-                                } else {
-                                        resolve(response);
-                                }
+                        const result = await new Promise((resolve, reject) => {
+                                chrome.runtime.sendMessage({
+                                        action: 'prepareBitcoinTransaction',
+                                        toAddress: toAddress,
+                                        amount: amount,
+                                        feeRate: effectiveFeeRate
+                                }, (response) => {
+                                        if (chrome.runtime.lastError) {
+                                                console.error('Chrome runtime error:', chrome.runtime.lastError);
+                                                reject(new Error(chrome.runtime.lastError.message));
+                                        } else {
+                                                console.log('prepareBitcoinTransaction response:', response);
+                                                resolve(response);
+                                        }
+                                });
                         });
-                });
+
+                        console.log('Transaction preparation result:', result);
+                        return result;
+                } catch (error) {
+                        console.error('Error in prepareTransaction:', error);
+                        return { success: false, error: error.message };
+                }
         }
 
         async confirmTransaction(pendingTransaction) {
@@ -250,24 +294,12 @@ class ChatManager {
                 }
         }
 
-        async getCurrentFeeRate() {
-                try {
-                        const response = await fetch('https://mempool.space/api/v1/fees/recommended');
-                        const data = await response.json();
-                        return data.fastestFee; // Returns satoshis per vbyte
-                } catch (error) {
-                        console.error('Error fetching fee rate:', error);
-                        return 5; // Default to 5 sat/vB if unable to fetch
-                }
-        }
-
         async generateFallbackResponse(userInput) {
                 console.log('Generating fallback response for input:', userInput);
                 const words = userInput.toLowerCase().split(' ');
                 let intent = "UNKNOWN";
                 let amount = -1;
                 let toAddress = "";
-                let feeRate = -1;
                 let transactionResult = null;
 
                 // Parse intent
@@ -276,6 +308,30 @@ class ChatManager {
                 } else if (words.includes("balance") || words.includes("check")) {
                         intent = "CHECK_BALANCE";
                 }
+
+                // Parse fee rate
+                const feeRateIndex = words.findIndex(w => w.includes('sat/vb'));
+                if (feeRateIndex !== -1) {
+                        feeRate = parseFloat(words[feeRateIndex - 1]);
+                }
+
+                // Get current fee rates
+                const currentFeeRates = await getFeeRates();
+                console.log('Current fee rates:', currentFeeRates);
+
+                // Choose fee rate based on transaction amount
+                let feeRate;
+                if (amount < 10000) {
+                        feeRate = currentFeeRates.economyFee;
+                } else if (amount < 50000) {
+                        feeRate = currentFeeRates.hourFee;
+                } else {
+                        feeRate = currentFeeRates.halfHourFee;
+                }
+
+                // Ensure the fee rate is not lower than the minimum
+                feeRate = Math.max(feeRate, currentFeeRates.minimumFee);
+                console.log(`Using fee rate: ${feeRate}`);
 
                 // Parse amount
                 const amountIndex = words.findIndex(w => !isNaN(w));
@@ -287,8 +343,19 @@ class ChatManager {
                         }
                 }
 
-                // Parse address
-                toAddress = words.find(w => w.startsWith('tb1') || w.startsWith('bc1')) || "";
+                // Parse address or contact
+                const atIndex = words.findIndex(w => w.startsWith('@'));
+                if (atIndex !== -1) {
+                        const contactName = words[atIndex].substring(1);
+                        const contact = this.contacts.find(c => c.username.toLowerCase() === contactName.toLowerCase());
+                        if (contact) {
+                                toAddress = contact.address;
+                        } else {
+                                intent = "INVALID_CONTACT";
+                        }
+                } else {
+                        toAddress = words.find(w => w.startsWith('tb1') || w.startsWith('bc1')) || "";
+                }
 
                 // Get current balance
                 let currentBalance;
@@ -298,15 +365,6 @@ class ChatManager {
                 } catch (balanceError) {
                         console.error('Error fetching balance:', balanceError);
                         currentBalance = 0;
-                }
-
-                // Get current fee rate
-                try {
-                        feeRate = await getMinFee();
-                        console.log('Current fee rate:', feeRate);
-                } catch (feeRateError) {
-                        console.error('Error fetching fee rate:', feeRateError);
-                        feeRate = 1; // Use a default value if fetching fails
                 }
 
                 // Validate transaction
@@ -349,6 +407,7 @@ class ChatManager {
                         amount: amount,
                         toAddress: toAddress,
                         feeRate: feeRate,
+                        feeRates: currentFeeRates,
                         currentBalance: currentBalance,
                         error: error,
                         transactionResult: transactionResult,
@@ -359,7 +418,6 @@ class ChatManager {
                 return JSON.stringify(response, null, 2);
         }
 
-        // Add this method to confirm and send the prepared transaction
         async confirmAndSendTransaction(pendingTransaction) {
                 if (!pendingTransaction) {
                         return { success: false, error: 'No pending transaction to confirm' };
@@ -374,8 +432,18 @@ class ChatManager {
                         );
                         return result;
                 } catch (error) {
-                        console.error('Error confirming transaction:', error);
+                        console.error('Error confirming and sending transaction:', error);
                         return { success: false, error: error.message };
+                }
+        }
+
+        async getCurrentFeeRate() {
+                try {
+                        const feeRates = await getFeeRates();
+                        return feeRates.halfHourFee; // Or choose another fee rate based on your preference
+                } catch (error) {
+                        console.error('Error fetching fee rate:', error);
+                        return 5; // Default to 5 sat/vB if unable to fetch
                 }
         }
 }

@@ -1,5 +1,5 @@
 // src/chatbot/ChatInterface.js
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 
 const ChatInterface = ({ chatManager }) => {
         const [input, setInput] = useState('');
@@ -9,13 +9,53 @@ const ChatInterface = ({ chatManager }) => {
         const [isFallback, setIsFallback] = useState(false);
         const [pendingTransaction, setPendingTransaction] = useState(null);
 
+        const [contacts, setContacts] = useState([]);
+        const [showAutoComplete, setShowAutoComplete] = useState(false);
+        const [autoCompleteOptions, setAutoCompleteOptions] = useState([]);
+        const inputRef = useRef(null);
+
         useEffect(() => {
                 const loadMessages = async () => {
                         await chatManager.loadMessages();
                         setMessages(chatManager.getMessages());
                 };
                 loadMessages();
+                loadContacts();
         }, [chatManager]);
+
+        const loadContacts = async () => {
+                const loadedContacts = await chatManager.loadContacts();
+                setContacts(loadedContacts);
+        };
+
+        const handleInputChange = (e) => {
+                const newInput = e.target.value;
+                setInput(newInput);
+
+                // Check for @ symbol to trigger auto-complete
+                const atIndex = newInput.lastIndexOf('@');
+                if (atIndex !== -1) {
+                        const partial = newInput.slice(atIndex + 1).toLowerCase();
+                        const options = contacts.filter(contact =>
+                                contact.username.toLowerCase().startsWith(partial)
+                        );
+                        setAutoCompleteOptions(options);
+                        setShowAutoComplete(options.length > 0);
+                } else {
+                        setShowAutoComplete(false);
+                }
+        };
+
+        const handleAutoCompleteSelect = (username) => {
+                const atIndex = input.lastIndexOf('@');
+                const newInput = input.slice(0, atIndex) + '@' + username + ' ';
+                setInput(newInput);
+                setShowAutoComplete(false);
+                if (inputRef.current) {
+                        inputRef.current.focus();
+                }
+        };
+
 
         const handleSubmit = async (e) => {
                 e.preventDefault();
@@ -114,14 +154,29 @@ const ChatInterface = ({ chatManager }) => {
                                         )}
                                 </div>
                                 <form onSubmit={handleSubmit} className="chat-input-area">
-                                        <input
-                                                type="text"
-                                                value={input}
-                                                onChange={(e) => setInput(e.target.value)}
-                                                placeholder="Type your message..."
-                                                className="chat-input"
-                                                disabled={isLoading || !!pendingTransaction}
-                                        />
+                                        <div className="input-wrapper">
+                                                <input
+                                                        type="text"
+                                                        value={input}
+                                                        onChange={handleInputChange}
+                                                        placeholder="Type your message..."
+                                                        className="chat-input"
+                                                        disabled={isLoading || !!pendingTransaction}
+                                                />
+                                                {showAutoComplete && (
+                                                        <div className="auto-complete">
+                                                                {autoCompleteOptions.map((contact) => (
+                                                                        <div
+                                                                                key={contact.username}
+                                                                                onClick={() => handleAutoCompleteSelect(contact.username)}
+                                                                                className="auto-complete-option"
+                                                                        >
+                                                                                @{contact.username}
+                                                                        </div>
+                                                                ))}
+                                                        </div>
+                                                )}
+                                        </div>
                                         <button type="submit" className="chat-send-button" disabled={isLoading || !!pendingTransaction}>
                                                 {isLoading ? 'Processing...' : 'Send'}
                                         </button>

@@ -6,6 +6,7 @@ import Login from './Login';
 import SetPassword from './SetPassword';
 import SendBTC from './SendBTC';
 import ReceivePage from './ReceivePage';
+import ContactsPage from './ContactsPage';
 import '../styles.css';
 
 import { ChatManager, ChatInterface } from '../chatbot';
@@ -401,6 +402,7 @@ const App = () => {
                         </header>
                         <main className="content">
                                 {view === 'create' && <CreateWallet onCreateWallet={handleCreateWallet} />}
+
                                 {view === 'showMnemonic' && newWallet && (
                                         <div className="card">
                                                 <h2>Your New Wallet</h2>
@@ -410,7 +412,9 @@ const App = () => {
                                                 <button className="btn" onClick={handleConfirmMnemonic}>I've saved my mnemonic</button>
                                         </div>
                                 )}
+
                                 {view === 'setPassword' && <SetPassword onSetPassword={handleSetPassword} />}
+
                                 {view === 'home' && currentWallet && (
                                         <HomePage
                                                 wallet={currentWallet}
@@ -420,12 +424,19 @@ const App = () => {
                                                 onCreateWallet={handleCreateAdditionalWallet}
                                                 onSend={() => setView('send')}
                                                 onReceive={() => setView('receive')}
+                                                onContacts={() => setView('contacts')}
                                         />
                                 )}
                                 {view === 'login' && <Login onLogin={handleLogin} onCreateWallet={handleCreateWallet} />}
+
                                 {view === 'send' && currentWallet && <SendBTC wallet={currentWallet} onReturn={() => setView('home')} />}
+
                                 {view === 'receive' && currentWallet && <ReceivePage wallet={currentWallet} onReturn={() => setView('home')} />}
+
+                                {view === 'contacts' && <ContactsPage onReturn={() => setView('home')} />}
+
                                 {!chatManager && <APIKeyInput onSave={initializeChatManager} />}
+
                                 {chatManager && <ChatInterface chatManager={chatManager} />}
                         </main>
                         <footer className="footer">
